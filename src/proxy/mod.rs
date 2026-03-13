@@ -6,7 +6,7 @@
 // - History management
 //
 // Architecture:
-//   Input thread:  Real stdin → ConPTY input pipe
+//   Input thread:  Real stdin → ConPTY input pipe (+ resize events → main thread)
 //   Output thread: ConPTY output pipe → channel → main thread
 //   Watcher thread: WaitForSingleObject on child process → shutdown signal
 //   Main thread:   Sync detector → stdout passthrough + history + metrics
@@ -33,10 +33,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, select, tick, Receiver, Sender};
+use crossbeam_channel::{bounded, select, Receiver, Sender};
 use tracing::{debug, error, info, warn};
 
 use crate::config::AppConfig;
@@ -99,6 +98,7 @@ impl Proxy {
         let (output_tx, output_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(64);
         let (shutdown_tx, shutdown_rx): (Sender<ShutdownReason>, Receiver<ShutdownReason>) =
             bounded(4);
+        let (resize_tx, resize_rx): (Sender<(i16, i16)>, Receiver<(i16, i16)>) = bounded(4);
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
@@ -166,11 +166,13 @@ impl Proxy {
 
         // Input thread: reads from real stdin, writes to ConPTY input pipe.
         //
-        // When stdin is a real console, we use WaitForMultipleObjects so the
-        // thread can be cleanly woken up via a shutdown event (instead of
-        // blocking forever in ReadConsole, which corrupts terminal state on
-        // forced exit). When stdin is a pipe (e.g. in tests), we fall back
-        // to blocking read since the thread will unblock when the pipe closes.
+        // When stdin is a real console, we use ReadConsoleInputW to get both
+        // keyboard events AND resize events (WINDOW_BUFFER_SIZE_EVENT). This
+        // gives instant resize response instead of the old 100ms polling.
+        // WaitForMultipleObjects provides clean shutdown via a shutdown event.
+        //
+        // When stdin is a pipe (e.g. in tests), we fall back to blocking read
+        // since the thread will unblock when the pipe closes.
         let input_shutdown_tx = shutdown_tx.clone();
         let input_flag = shutdown_flag.clone();
 
@@ -191,15 +193,13 @@ impl Proxy {
                         input_flag,
                         input_shutdown_tx,
                         shutdown_event_handle,
+                        resize_tx,
                     );
                 } else {
                     run_pipe_input_loop(input_write, input_flag, input_shutdown_tx);
                 }
             })
             .context("failed to spawn input thread")?;
-
-        // Resize polling ticker
-        let resize_tick = tick(Duration::from_millis(100));
 
         let mut stdout = std::io::stdout().lock();
         let mut last_size = (cols, rows);
@@ -262,26 +262,26 @@ impl Proxy {
                         }
                     }
                 }
-                recv(resize_tick) -> _ => {
-                    if let Some((new_cols, new_rows)) = crate::conpty::get_terminal_size()
-                        && (new_cols, new_rows) != last_size
-                    {
-                        info!(
-                            old_cols = last_size.0,
-                            old_rows = last_size.1,
-                            new_cols,
-                            new_rows,
-                            "terminal resize detected"
-                        );
-                        if let Err(e) = self.session.resize(new_cols, new_rows) {
-                            warn!(error = %e, "failed to resize ConPTY");
-                        }
-                        last_size = (new_cols, new_rows);
+                recv(resize_rx) -> msg => {
+                    if let Ok((new_cols, new_rows)) = msg {
+                        if (new_cols, new_rows) != last_size {
+                            info!(
+                                old_cols = last_size.0,
+                                old_rows = last_size.1,
+                                new_cols,
+                                new_rows,
+                                "terminal resize detected"
+                            );
+                            if let Err(e) = self.session.resize(new_cols, new_rows) {
+                                warn!(error = %e, "failed to resize ConPTY");
+                            }
+                            last_size = (new_cols, new_rows);
 
-                        let _ = self.event_tx.try_send(ProxyEvent::Resize {
-                            cols: new_cols,
-                            rows: new_rows,
-                        });
+                            let _ = self.event_tx.try_send(ProxyEvent::Resize {
+                                cols: new_cols,
+                                rows: new_rows,
+                            });
+                        }
                     }
                 }
             }
@@ -330,10 +330,9 @@ impl Proxy {
         info!("waiting for output thread");
         let _ = output_thread.join();
 
-        // The input thread is NOT joined — on Windows, ReadFile on a console
-        // handle can block even after WaitForMultipleObjects signals (non-character
-        // console events trigger the signal but ReadFile only returns on character
-        // input). The thread will be killed when the process exits.
+        // The input thread is NOT joined — on Windows, ReadConsoleInputW on a
+        // console handle can block even after WaitForMultipleObjects signals.
+        // The thread will be killed when the process exits.
         drop(input_thread);
 
         info!(
@@ -388,65 +387,99 @@ fn signal_shutdown_event(event_handle: usize) {
     }
 }
 
-/// Console input loop: uses WaitForMultipleObjects to be cancellable via shutdown event.
-/// This prevents the thread from blocking forever in ReadConsole, which would corrupt
-/// terminal state when the process exits with the thread still mid-syscall.
+/// Console input loop: uses ReadConsoleInputW to handle both keyboard input
+/// and WINDOW_BUFFER_SIZE_EVENT for instant resize detection.
+///
+/// WaitForMultipleObjects on stdin + shutdown event provides clean cancellation.
+/// With ENABLE_VIRTUAL_TERMINAL_INPUT active, the console converts arrow keys,
+/// function keys, etc. into VT escape sequences delivered as KEY_EVENT records
+/// with valid UnicodeChar values — no manual VT sequence generation needed.
 fn run_console_input_loop(
     input_write: crate::conpty::OwnedHandle,
     flag: Arc<AtomicBool>,
     shutdown_tx: Sender<ShutdownReason>,
     shutdown_event_handle: usize,
+    resize_tx: Sender<(i16, i16)>,
 ) {
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
-    use windows::Win32::Storage::FileSystem::ReadFile;
     use windows::Win32::System::Console::{
-        GetNumberOfConsoleInputEvents, GetStdHandle, STD_INPUT_HANDLE,
+        GetStdHandle, ReadConsoleInputW, INPUT_RECORD, KEY_EVENT, STD_INPUT_HANDLE,
+        WINDOW_BUFFER_SIZE_EVENT,
     };
     use windows::Win32::System::Threading::WaitForMultipleObjects;
 
     let stdin_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE).unwrap_or(HANDLE::default()) };
     let event_handle = HANDLE(shutdown_event_handle as *mut _);
     let handles = [stdin_handle, event_handle];
-    let mut buf = vec![0u8; 1024];
+    let mut records = vec![INPUT_RECORD::default(); 128];
 
     loop {
         if flag.load(Ordering::Relaxed) {
             break;
         }
 
-        // Wait for either stdin data or shutdown event (100ms timeout for flag checks)
+        // Wait for either stdin events or shutdown event (100ms timeout for flag checks)
         let wait_result = unsafe { WaitForMultipleObjects(&handles, false, 100) };
 
         if wait_result == WAIT_OBJECT_0 {
-            // stdin signaled — check if there are actual input events
-            let mut num_events = 0u32;
-            let has_events = unsafe {
-                GetNumberOfConsoleInputEvents(stdin_handle, &mut num_events).is_ok()
-                    && num_events > 0
-            };
-
-            if !has_events {
-                continue;
-            }
-
-            let mut bytes_read = 0u32;
+            // stdin signaled — read console input records
+            let mut num_read = 0u32;
             let read_ok = unsafe {
-                ReadFile(stdin_handle, Some(&mut buf), Some(&mut bytes_read), None).is_ok()
+                ReadConsoleInputW(stdin_handle, &mut records, &mut num_read).is_ok()
             };
 
-            if !read_ok || bytes_read == 0 {
+            if !read_ok || num_read == 0 {
                 info!("stdin EOF");
                 let _ = shutdown_tx.try_send(ShutdownReason::InputEof);
                 break;
             }
 
-            debug!(bytes = bytes_read, "stdin read");
-            if let Err(e) = input_write.write_all(&buf[..bytes_read as usize]) {
-                if !flag.load(Ordering::Relaxed) {
-                    warn!(error = %e, "input pipe write error");
-                    let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
+            // Process each input record
+            let mut input_bytes = Vec::new();
+            for record in &records[..num_read as usize] {
+                match record.EventType as u32 {
+                    KEY_EVENT => {
+                        let key = unsafe { record.Event.KeyEvent };
+                        // Only process key-down events
+                        if key.bKeyDown.as_bool() {
+                            let uc = unsafe { key.uChar.UnicodeChar };
+                            if uc != 0 {
+                                // Encode UTF-16 code unit to UTF-8
+                                if let Some(ch) = char::from_u32(uc as u32) {
+                                    let mut buf = [0u8; 4];
+                                    let encoded = ch.encode_utf8(&mut buf);
+                                    // Handle repeat count
+                                    for _ in 0..key.wRepeatCount.max(1) {
+                                        input_bytes.extend_from_slice(encoded.as_bytes());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    WINDOW_BUFFER_SIZE_EVENT => {
+                        let size = unsafe { record.Event.WindowBufferSizeEvent };
+                        let new_cols = size.dwSize.X;
+                        let new_rows = size.dwSize.Y;
+                        debug!(cols = new_cols, rows = new_rows, "resize event received");
+                        // Use try_send to naturally coalesce rapid resize events
+                        let _ = resize_tx.try_send((new_cols, new_rows));
+                    }
+                    _ => {
+                        // Mouse, menu, focus events — skip
+                    }
                 }
-                break;
+            }
+
+            // Write accumulated keyboard input to ConPTY
+            if !input_bytes.is_empty() {
+                debug!(bytes = input_bytes.len(), "stdin read");
+                if let Err(e) = input_write.write_all(&input_bytes) {
+                    if !flag.load(Ordering::Relaxed) {
+                        warn!(error = %e, "input pipe write error");
+                        let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
+                    }
+                    break;
+                }
             }
         } else if wait_result.0 == WAIT_OBJECT_0.0 + 1 {
             // Shutdown event signaled
