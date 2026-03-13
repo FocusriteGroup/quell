@@ -3,6 +3,8 @@
 //! When running as a proxy, we need to enable VT processing on stdout
 //! and VT input on stdin. On exit we restore the original modes.
 
+use std::sync::OnceLock;
+
 use windows::Win32::System::Console::{
     CONSOLE_MODE, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
@@ -13,6 +15,10 @@ use tracing::{info, warn};
 
 use super::error::Result;
 use super::sys;
+
+/// Static storage for emergency restore from panic hooks.
+/// Stores (stdin_handle_raw, stdout_handle_raw, original_stdin_mode, original_stdout_mode).
+static SAVED_MODES: OnceLock<(usize, usize, u32, u32)> = OnceLock::new();
 
 /// Saved console modes for stdin and stdout.
 /// Restores original modes on drop.
@@ -40,6 +46,16 @@ impl ConsoleMode {
             stdout_mode = format!("0x{:X}", original_stdout_mode.0),
             "console modes saved"
         );
+
+        // Store in static for emergency restore
+        SAVED_MODES.get_or_init(|| {
+            (
+                stdin_handle.0 as usize,
+                stdout_handle.0 as usize,
+                original_stdin_mode.0,
+                original_stdout_mode.0,
+            )
+        });
 
         // Set stdin to VT input mode
         let new_stdin_mode = ENABLE_VIRTUAL_TERMINAL_INPUT
@@ -71,6 +87,24 @@ impl ConsoleMode {
         sys::set_console_mode(self.stdout_handle, self.original_stdout_mode)?;
         info!("console modes restored");
         Ok(())
+    }
+
+    /// Emergency restore from a panic hook or signal handler.
+    ///
+    /// Uses the statically-saved handle values and modes. Safe to call
+    /// from any thread, any context. Silently does nothing if modes were
+    /// never saved.
+    pub fn emergency_restore() {
+        use windows::Win32::System::Console::SetConsoleMode;
+
+        if let Some(&(stdin_raw, stdout_raw, stdin_mode, stdout_mode)) = SAVED_MODES.get() {
+            let stdin_h = HANDLE(stdin_raw as *mut _);
+            let stdout_h = HANDLE(stdout_raw as *mut _);
+            unsafe {
+                let _ = SetConsoleMode(stdin_h, CONSOLE_MODE(stdin_mode));
+                let _ = SetConsoleMode(stdout_h, CONSOLE_MODE(stdout_mode));
+            }
+        }
     }
 }
 

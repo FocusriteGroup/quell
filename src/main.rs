@@ -4,28 +4,13 @@ mod history;
 mod proxy;
 mod vt;
 
-use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-
 use anyhow::{Context, Result};
 use clap::Parser;
-use crossbeam_channel::{bounded, select, tick, Receiver, Sender};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{info, warn};
 
 use config::AppConfig;
 use conpty::{ConsoleMode, ConPtySession};
-
-/// Reason a thread is signaling shutdown
-#[derive(Debug, Clone)]
-enum ShutdownReason {
-    ChildExited,
-    InputEof,
-    OutputEof,
-    CtrlC,
-    Error(String),
-}
+use proxy::Proxy;
 
 fn main() -> Result<()> {
     let cli = config::Cli::parse();
@@ -59,7 +44,7 @@ fn main() -> Result<()> {
     );
 
     // Run the proxy — returns the child's exit code
-    let exit_code = run_proxy(&command_line)?;
+    let exit_code = run_proxy(&command_line, config)?;
 
     info!(exit_code, "claude-terminal shutting down");
 
@@ -70,201 +55,25 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Get the current terminal size from the real stdout console.
-fn get_terminal_size() -> Option<(i16, i16)> {
-    conpty::get_terminal_size()
-}
-
-fn run_proxy(command_line: &str) -> Result<u32> {
+fn run_proxy(command_line: &str, config: AppConfig) -> Result<u32> {
     // Detect terminal size
-    let (cols, rows) = get_terminal_size().unwrap_or((120, 30));
+    let (cols, rows) = conpty::get_terminal_size().unwrap_or((120, 30));
     info!(cols, rows, "detected terminal size");
 
     // Save console mode and set raw/VT mode
     let console_mode = ConsoleMode::save_and_set_raw()
         .context("failed to save/set console mode")?;
 
+    // Install panic hook to restore console before printing panic
+    install_panic_hook();
+
     // Spawn child in ConPTY
-    let mut session = ConPtySession::spawn(command_line, cols, rows)
+    let session = ConPtySession::spawn(command_line, cols, rows)
         .context("failed to create ConPTY session")?;
 
-    // Take I/O handles for the threads
-    let (input_write, output_read) = session
-        .take_io()
-        .context("failed to take I/O handles from session")?;
-
-    // Channels
-    let (output_tx, output_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(64);
-    let (shutdown_tx, shutdown_rx): (Sender<ShutdownReason>, Receiver<ShutdownReason>) = bounded(4);
-
-    let shutdown_flag = Arc::new(AtomicBool::new(false));
-
-    // Set up Ctrl+C handler
-    {
-        let shutdown_tx = shutdown_tx.clone();
-        let flag = shutdown_flag.clone();
-        ctrlc_handler(shutdown_tx, flag);
-    }
-
-    // Output thread: reads from ConPTY output pipe, sends to main thread
-    let output_shutdown_tx = shutdown_tx.clone();
-    let output_flag = shutdown_flag.clone();
-    let output_thread = thread::Builder::new()
-        .name("conpty-output".into())
-        .spawn(move || {
-            let mut buf = vec![0u8; 8192];
-            loop {
-                if output_flag.load(Ordering::Relaxed) {
-                    break;
-                }
-                match output_read.read(&mut buf) {
-                    Ok(0) => {
-                        info!("output pipe EOF");
-                        let _ = output_shutdown_tx.try_send(ShutdownReason::OutputEof);
-                        break;
-                    }
-                    Ok(n) => {
-                        debug!(bytes = n, "output chunk received");
-                        if output_tx.send(buf[..n as usize].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        if !output_flag.load(Ordering::Relaxed) {
-                            warn!(error = %e, "output pipe read error");
-                            let _ = output_shutdown_tx
-                                .try_send(ShutdownReason::Error(e.to_string()));
-                        }
-                        break;
-                    }
-                }
-            }
-        })
-        .context("failed to spawn output thread")?;
-
-    // Input thread: reads from real stdin, writes to ConPTY input pipe
-    let input_shutdown_tx = shutdown_tx.clone();
-    let input_flag = shutdown_flag.clone();
-    let _input_thread = thread::Builder::new()
-        .name("conpty-input".into())
-        .spawn(move || {
-            use std::io::Read;
-
-            let stdin = std::io::stdin();
-            let mut stdin = stdin.lock();
-            let mut buf = vec![0u8; 1024];
-
-            loop {
-                if input_flag.load(Ordering::Relaxed) {
-                    break;
-                }
-                match stdin.read(&mut buf) {
-                    Ok(0) => {
-                        info!("stdin EOF");
-                        let _ = input_shutdown_tx.try_send(ShutdownReason::InputEof);
-                        break;
-                    }
-                    Ok(n) => {
-                        debug!(bytes = n, "stdin read");
-                        if let Err(e) = input_write.write_all(&buf[..n]) {
-                            if !input_flag.load(Ordering::Relaxed) {
-                                warn!(error = %e, "input pipe write error");
-                                let _ = input_shutdown_tx
-                                    .try_send(ShutdownReason::Error(e.to_string()));
-                            }
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        if !input_flag.load(Ordering::Relaxed) {
-                            warn!(error = %e, "stdin read error");
-                            let _ = input_shutdown_tx
-                                .try_send(ShutdownReason::Error(e.to_string()));
-                        }
-                        break;
-                    }
-                }
-            }
-        })
-        .context("failed to spawn input thread")?;
-
-    // Note: child exit is detected by the output thread receiving EOF on the pipe.
-    // No separate child-wait thread needed for raw passthrough mode.
-
-    // Resize polling ticker
-    let resize_tick = tick(std::time::Duration::from_millis(100));
-
-    let mut stdout = std::io::stdout().lock();
-    let mut last_size = (cols, rows);
-
-    // Main loop
-    info!("entering main proxy loop");
-    loop {
-        select! {
-            recv(output_rx) -> msg => {
-                match msg {
-                    Ok(data) => {
-                        // Raw passthrough: write child output directly to real stdout
-                        if let Err(e) = stdout.write_all(&data) {
-                            error!(error = %e, "failed to write to stdout");
-                            break;
-                        }
-                        if let Err(e) = stdout.flush() {
-                            error!(error = %e, "failed to flush stdout");
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        info!("output channel closed");
-                        break;
-                    }
-                }
-            }
-            recv(shutdown_rx) -> msg => {
-                match msg {
-                    Ok(reason) => {
-                        info!(?reason, "shutdown signal received");
-                        break;
-                    }
-                    Err(_) => {
-                        info!("shutdown channel closed");
-                        break;
-                    }
-                }
-            }
-            recv(resize_tick) -> _ => {
-                if let Some((new_cols, new_rows)) = get_terminal_size() {
-                    if (new_cols, new_rows) != last_size {
-                        info!(
-                            old_cols = last_size.0,
-                            old_rows = last_size.1,
-                            new_cols,
-                            new_rows,
-                            "terminal resize detected"
-                        );
-                        if let Err(e) = session.resize(new_cols, new_rows) {
-                            warn!(error = %e, "failed to resize ConPTY");
-                        }
-                        last_size = (new_cols, new_rows);
-                    } else {
-                        trace!("resize poll: size unchanged");
-                    }
-                }
-            }
-        }
-    }
-
-    // Signal all threads to stop
-    info!("shutting down I/O threads");
-    shutdown_flag.store(true, Ordering::Relaxed);
-
-    // Drop session to close ConPTY — this unblocks the output thread's ReadFile
-    drop(session);
-
-    // Join threads (with timeouts via drop — they'll exit when pipes break)
-    let _ = output_thread.join();
-    // Input thread may be blocked on stdin read — it'll unblock when process exits
-    // We don't join it to avoid hanging
+    // Create and run the proxy
+    let (proxy, _events) = Proxy::new(config, session);
+    let exit_code = proxy.run()?;
 
     // Restore console mode (explicit restore before Drop for better error reporting)
     if let Err(e) = console_mode.restore() {
@@ -273,46 +82,17 @@ fn run_proxy(command_line: &str) -> Result<u32> {
     // Prevent double-restore in Drop
     std::mem::forget(console_mode);
 
-    info!("proxy shutdown complete");
-
-    // We don't have the exit code from the child here since we relied on output EOF.
-    // Return 0 for now — the child exit code will be captured properly in a future iteration.
-    Ok(0)
+    Ok(exit_code)
 }
 
-fn ctrlc_handler(shutdown_tx: Sender<ShutdownReason>, flag: Arc<AtomicBool>) {
-    use std::sync::OnceLock;
-    use windows::Win32::Foundation::BOOL;
-    use windows::Win32::System::Console::SetConsoleCtrlHandler;
-
-    struct CtrlState {
-        tx: Sender<ShutdownReason>,
-        flag: Arc<AtomicBool>,
-    }
-    // SAFETY: OnceLock ensures single initialization. The handler only reads.
-    unsafe impl Sync for CtrlState {}
-
-    static STATE: OnceLock<CtrlState> = OnceLock::new();
-    STATE.get_or_init(|| CtrlState {
-        tx: shutdown_tx,
-        flag,
-    });
-
-    unsafe extern "system" fn handler(ctrl_type: u32) -> BOOL {
-        // CTRL_C_EVENT = 0
-        if ctrl_type == 0 {
-            if let Some(state) = STATE.get() {
-                state.flag.store(true, Ordering::Relaxed);
-                let _ = state.tx.try_send(ShutdownReason::CtrlC);
-            }
-            return BOOL(1);
-        }
-        BOOL(0)
-    }
-
-    unsafe {
-        let _ = SetConsoleCtrlHandler(Some(Some(handler)), true);
-    }
+/// Install a panic hook that restores console mode before printing the panic.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Restore console mode so the panic message is readable
+        ConsoleMode::emergency_restore();
+        default_hook(info);
+    }));
 }
 
 fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
@@ -322,7 +102,7 @@ fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocki
         .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
 
     if let Some(log_file) = &cli.log_file {
-        // File logging with structured JSON output
+        // File logging with structured output
         let log_dir = std::path::Path::new(log_file)
             .parent()
             .unwrap_or(std::path::Path::new("."));

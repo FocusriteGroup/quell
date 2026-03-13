@@ -50,7 +50,7 @@ impl LineBuffer {
         self.lines.push_back(line);
         self.total_lines_added += 1;
 
-        if self.total_lines_added % 10_000 == 0 {
+        if self.total_lines_added.is_multiple_of(10_000) {
             trace!(
                 total_added = self.total_lines_added,
                 total_dropped = self.total_lines_dropped,

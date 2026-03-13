@@ -6,6 +6,10 @@ description = "Windows-native terminal proxy for Claude Code — eliminates scro
 license = "MIT"
 repository = "https://github.com/FurbySoup/terminal-exploration"
 
+[lib]
+name = "claude_terminal"
+path = "src/lib.rs"
+
 [[bin]]
 name = "claude-terminal"
 path = "src/main.rs"
