@@ -47,15 +47,16 @@
 - [x] Event hook system: ProxyEvent channel (sync block complete, resize, child exit)
 - [x] Live-proved through 6 rounds (LP1-LP6) against Claude Code
 
-### Milestone 1.4: History, Filtering & Sequence Security
-- [ ] Escape filter layer 1 (byte-level): strip OSC 52 (clipboard), OSC 50 (font query), C1 control bytes (0x80-0x9F)
-- [ ] Escape filter layer 2 (parse-level via termwiz): classify sequences as allow/filter/block per SECURITY.md tables
-- [ ] Block terminal query responses: never echo DA, DECRQSS, title report on behalf of the proxy
-- [ ] Sanitize OSC 2 (window title): strip control characters from title text before forwarding
-- [ ] History accumulation from sync blocks
-- [ ] Full-redraw detection and history clear
-- [ ] History entries include metadata (timestamp, event type) for Phase 2 structured view
-- [ ] `trace!` level startup warning when content-level logging is enabled
+### Milestone 1.4: History, Filtering & Sequence Security ✓
+- [x] Escape filter layer 1 (byte-level `OutputFilter`): strips OSC 52 (clipboard), OSC 50 (font query), C1 control bytes (0x80-0x9F), DA/DSR/DECRQM queries, kitty keyboard queries, DCS sequences — with chunk-boundary state machine
+- [x] Escape filter layer 2 (parse-level `EscapeFilter` via termwiz): whitelist-based classification for history replay — keeps SGR, cursor, edit, safe OSC; strips mode changes, device queries, mouse/keyboard protocol, window ops, DCS, Sixel
+- [x] Block terminal query responses: DA, DSR, DECRQM stripped before reaching stdout
+- [x] Sanitize OSC 2 (window title): control characters stripped from title text before forwarding
+- [x] History accumulation from sync blocks with event type tagging
+- [x] Full-redraw detection inserts boundary markers in history
+- [x] History entries include metadata (`HistoryEntry` with timestamp, `HistoryEventType`) for Phase 2 structured view
+- [x] `trace!` level startup warning when content-level logging is enabled
+- [x] Zero-copy hot-path: `OutputFilter.filter()` returns `&[u8]` reference, no allocation per chunk
 
 ### Milestone 1.5: Live Proving
 - [ ] Test with Claude Code streaming responses (primary)
