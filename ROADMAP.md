@@ -28,23 +28,24 @@
 - [x] VT100 differential renderer with tests
 - [x] Line buffer (history) with tests
 
-### Milestone 1.2: ConPTY Integration
-- [ ] ConPTY session creation (`CreatePseudoConsole`) via direct `windows` crate bindings
-- [ ] Child process spawning with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
-- [ ] Input pipe thread (real stdin → ConPTY)
-- [ ] Output pipe thread (ConPTY → channel → main thread)
-- [ ] Resize handling (`ResizePseudoConsole` + `WINDOW_BUFFER_SIZE_EVENT` polling)
-- [ ] `ConPtySession` designed as self-contained struct (supports multiple instances for Phase 2)
+### Milestone 1.2: ConPTY Integration ✓
+- [x] ConPTY session creation (`CreatePseudoConsole`) via direct `windows` crate bindings
+- [x] Child process spawning with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+- [x] Input pipe thread (real stdin → ConPTY)
+- [x] Output pipe thread (ConPTY → channel → main thread)
+- [x] Resize handling (`ResizePseudoConsole` + event-driven `WINDOW_BUFFER_SIZE_EVENT`)
+- [x] `ConPtySession` designed as self-contained struct (supports multiple instances for Phase 2)
 
-### Milestone 1.3: Proxy Loop
-- [ ] 3-thread model: input thread, output thread, main thread (render + coalesce)
-- [ ] Render coalescer (5ms normal, 50ms sync, 60fps cap — all configurable)
-- [ ] Wire everything: ConPTY → Sync Detector → VT Emulator → Diff → stdout
-- [ ] Wrap diff output in BSU/ESU sync markers for atomic display
-- [ ] Input forwarding with raw mode (`SetConsoleMode` with save/restore, including panic hook)
-- [ ] Ctrl+C / signal handling (forward as console control event)
-- [ ] Graceful shutdown (child exit detection)
-- [ ] Event hook system: emit lightweight events (sync block complete, screen region changed, prompt detected) into a channel — Phase 1 ignores these, Phase 2 consumes them
+### Milestone 1.3: Proxy Loop ✓
+- [x] 4-thread model: input thread, output thread, child-exit watcher, main thread
+- [x] Render coalescer (5ms normal, 50ms sync, 60fps cap — all configurable) — built, deferred to Phase 2
+- [x] Transparent passthrough mode: ConPTY → stdout (diff rendering deferred to Phase 2 Tauri terminal)
+- [x] Sync detector + history fed for metrics (does not affect output in Phase 1)
+- [x] Input forwarding with raw mode (`SetConsoleMode` with save/restore, including panic hook)
+- [x] Ctrl+C forwarding (ENABLE_PROCESSED_INPUT disabled, 0x03 passed through naturally)
+- [x] Graceful shutdown (child-exit watcher → ClosePseudoConsole → pipe EOF → clean exit)
+- [x] Event hook system: ProxyEvent channel (sync block complete, resize, child exit)
+- [x] Live-proved through 6 rounds (LP1-LP6) against Claude Code
 
 ### Milestone 1.4: History, Filtering & Sequence Security
 - [ ] Escape filter layer 1 (byte-level): strip OSC 52 (clipboard), OSC 50 (font query), C1 control bytes (0x80-0x9F)
