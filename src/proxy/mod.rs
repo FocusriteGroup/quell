@@ -36,11 +36,11 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::config::AppConfig;
 use crate::conpty::ConPtySession;
-use crate::history::LineBuffer;
+use crate::history::{HistoryEventType, LineBuffer, OutputFilter};
 use crate::vt::{SyncBlockDetector, SyncEvent};
 
 use events::{event_channel, ProxyEvent};
@@ -87,8 +87,9 @@ impl Proxy {
             .take_io()
             .context("failed to take I/O handles from session")?;
 
-        // Create pipeline components for metrics (output goes directly to stdout)
+        // Create pipeline components
         let (cols, rows) = self.session.size();
+        let mut output_filter = OutputFilter::new();
         let mut detector = SyncBlockDetector::new();
         let mut history = LineBuffer::new(self.config.history_lines);
         let mut total_bytes: u64 = 0;
@@ -127,6 +128,7 @@ impl Proxy {
                 let _ = watcher_shutdown_tx.try_send(ShutdownReason::ChildExited);
             })
             .context("failed to spawn child watcher thread")?;
+        info!("child watcher thread started");
 
         // Output thread: reads from ConPTY output pipe, sends to main thread
         let output_shutdown_tx = shutdown_tx.clone();
@@ -163,6 +165,7 @@ impl Proxy {
                 }
             })
             .context("failed to spawn output thread")?;
+        info!("output thread started");
 
         // Input thread: reads from real stdin, writes to ConPTY input pipe.
         //
@@ -200,6 +203,7 @@ impl Proxy {
                 }
             })
             .context("failed to spawn input thread")?;
+        info!("input thread started");
 
         let mut stdout = std::io::stdout().lock();
         let mut last_size = (cols, rows);
@@ -211,8 +215,11 @@ impl Proxy {
                 recv(output_rx) -> msg => {
                     match msg {
                         Ok(data) => {
-                            // Write directly to stdout — transparent passthrough
-                            if let Err(e) = stdout.write_all(&data) {
+                            // Filter dangerous sequences before output
+                            let filtered = output_filter.filter(&data);
+
+                            // Write filtered data to stdout
+                            if let Err(e) = stdout.write_all(&filtered) {
                                 error!(error = %e, "failed to write to stdout");
                                 break;
                             }
@@ -221,18 +228,21 @@ impl Proxy {
                                 break;
                             }
 
-                            total_bytes += data.len() as u64;
+                            total_bytes += filtered.len() as u64;
                             chunk_count += 1;
 
-                            // Feed pipeline for metrics (does not affect output)
-                            let events = detector.process(&data);
+                            // Feed pipeline with filtered data
+                            let events = detector.process(&filtered);
                             for event in events {
                                 match event {
                                     SyncEvent::PassThrough(bytes) => {
-                                        history.push(bytes);
+                                        history.push(bytes, HistoryEventType::Output);
                                     }
                                     SyncEvent::SyncBlock { data: block_data, is_full_redraw } => {
-                                        history.push(&block_data);
+                                        if is_full_redraw {
+                                            history.insert_boundary(HistoryEventType::FullRedrawBoundary);
+                                        }
+                                        history.push(&block_data, HistoryEventType::SyncBlock);
 
                                         let _ = self.event_tx.try_send(
                                             ProxyEvent::SyncBlockComplete {
@@ -465,7 +475,7 @@ fn run_console_input_loop(
                         let _ = resize_tx.try_send((new_cols, new_rows));
                     }
                     _ => {
-                        // Mouse, menu, focus events — skip
+                        trace!(event_type = record.EventType, "skipping non-keyboard input event");
                     }
                 }
             }

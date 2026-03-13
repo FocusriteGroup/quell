@@ -23,6 +23,12 @@ fn main() -> Result<()> {
         "terminal-exploration starting"
     );
 
+    // Warn if trace-level logging is enabled — it may capture raw terminal content
+    if tracing::enabled!(tracing::Level::TRACE) {
+        warn!("TRACE logging is enabled — raw terminal content may appear in logs. \
+               This should only be used for debugging, never in production.");
+    }
+
     // Load configuration
     let config = AppConfig::load(&cli).context("failed to load configuration")?;
     info!(?config, "configuration loaded");

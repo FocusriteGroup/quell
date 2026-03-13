@@ -42,8 +42,8 @@ impl ConsoleMode {
         let original_stdout_mode = sys::get_console_mode(stdout_handle)?;
 
         info!(
-            stdin_mode = format!("0x{:X}", original_stdin_mode.0),
-            stdout_mode = format!("0x{:X}", original_stdout_mode.0),
+            stdin_mode = original_stdin_mode.0,
+            stdout_mode = original_stdout_mode.0,
             "console modes saved"
         );
 
@@ -72,8 +72,8 @@ impl ConsoleMode {
         sys::set_console_mode(stdout_handle, new_stdout_mode)?;
 
         info!(
-            new_stdin_mode = format!("0x{:X}", new_stdin_mode.0),
-            new_stdout_mode = format!("0x{:X}", new_stdout_mode.0),
+            new_stdin_mode = new_stdin_mode.0,
+            new_stdout_mode = new_stdout_mode.0,
             "console modes set for proxy operation"
         );
 

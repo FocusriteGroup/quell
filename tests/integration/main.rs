@@ -234,7 +234,7 @@ mod proxy_pipeline_tests {
     /// Test that history receives data from the pipeline.
     #[test]
     fn test_pipeline_history_receives_data() {
-        use terminal_exploration::history::LineBuffer;
+        use terminal_exploration::history::{HistoryEventType, LineBuffer};
         use terminal_exploration::vt::{SyncBlockDetector, SyncEvent};
 
         let mut detector = SyncBlockDetector::new();
@@ -245,8 +245,8 @@ mod proxy_pipeline_tests {
 
         for event in &events {
             match event {
-                SyncEvent::PassThrough(bytes) => history.push(bytes),
-                SyncEvent::SyncBlock { data, .. } => history.push(data),
+                SyncEvent::PassThrough(bytes) => history.push(bytes, HistoryEventType::Output),
+                SyncEvent::SyncBlock { data, .. } => history.push(data, HistoryEventType::SyncBlock),
             }
         }
 

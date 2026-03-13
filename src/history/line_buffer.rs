@@ -1,5 +1,25 @@
 use std::collections::VecDeque;
+use std::time::Instant;
 use tracing::{debug, trace};
+
+/// Type of event that produced a history entry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HistoryEventType {
+    /// Normal passthrough output
+    Output,
+    /// Output from within a DEC mode 2026 sync block
+    SyncBlock,
+    /// Boundary marker: a full redraw was detected
+    FullRedrawBoundary,
+}
+
+/// A single history entry with metadata.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub line: Vec<u8>,
+    pub timestamp: Instant,
+    pub event_type: HistoryEventType,
+}
 
 /// Circular line buffer for scrollback history.
 ///
@@ -7,10 +27,12 @@ use tracing::{debug, trace};
 /// is reached, the oldest lines are dropped (FIFO). Lines are stored
 /// as raw bytes including any ANSI escape sequences that passed filtering.
 pub struct LineBuffer {
-    lines: VecDeque<Vec<u8>>,
+    lines: VecDeque<HistoryEntry>,
     max_lines: usize,
     /// Partial line buffer for data that doesn't end with a newline
     partial: Vec<u8>,
+    /// Event type for the current partial line
+    partial_event_type: HistoryEventType,
 
     // Metrics
     total_lines_added: u64,
@@ -21,33 +43,48 @@ impl LineBuffer {
     pub fn new(max_lines: usize) -> Self {
         debug!(max_lines, "initializing line buffer");
         Self {
-            lines: VecDeque::with_capacity(max_lines.min(1024)), // Don't pre-allocate everything
+            lines: VecDeque::with_capacity(max_lines.min(1024)),
             max_lines,
             partial: Vec::new(),
+            partial_event_type: HistoryEventType::Output,
             total_lines_added: 0,
             total_lines_dropped: 0,
         }
     }
 
     /// Push raw bytes into the buffer, splitting on newlines.
-    pub fn push(&mut self, data: &[u8]) {
+    pub fn push(&mut self, data: &[u8], event_type: HistoryEventType) {
         self.partial.extend_from_slice(data);
+        self.partial_event_type = event_type;
 
         // Split on newlines
         while let Some(newline_pos) = self.partial.iter().position(|&b| b == b'\n') {
             let line = self.partial[..newline_pos].to_vec();
             self.partial = self.partial[newline_pos + 1..].to_vec();
-            self.add_line(line);
+            self.add_line(HistoryEntry {
+                line,
+                timestamp: Instant::now(),
+                event_type: self.partial_event_type,
+            });
         }
     }
 
-    /// Add a complete line to the buffer
-    fn add_line(&mut self, line: Vec<u8>) {
+    /// Insert a boundary marker entry (e.g., full-redraw boundary).
+    pub fn insert_boundary(&mut self, event_type: HistoryEventType) {
+        self.add_line(HistoryEntry {
+            line: Vec::new(),
+            timestamp: Instant::now(),
+            event_type,
+        });
+    }
+
+    /// Add a complete entry to the buffer
+    fn add_line(&mut self, entry: HistoryEntry) {
         if self.lines.len() >= self.max_lines {
             self.lines.pop_front();
             self.total_lines_dropped += 1;
         }
-        self.lines.push_back(line);
+        self.lines.push_back(entry);
         self.total_lines_added += 1;
 
         if self.total_lines_added.is_multiple_of(10_000) {
@@ -80,15 +117,20 @@ impl LineBuffer {
         self.lines.is_empty()
     }
 
-    /// Get all lines as byte slices (for replay)
-    pub fn lines(&self) -> impl Iterator<Item = &[u8]> {
-        self.lines.iter().map(|l| l.as_slice())
+    /// Get all entries (for replay)
+    pub fn entries(&self) -> impl Iterator<Item = &HistoryEntry> {
+        self.lines.iter()
     }
 
-    /// Get the last N lines
-    pub fn tail(&self, n: usize) -> impl Iterator<Item = &[u8]> {
+    /// Get all lines as byte slices (convenience for simple access)
+    pub fn lines(&self) -> impl Iterator<Item = &[u8]> {
+        self.lines.iter().map(|e| e.line.as_slice())
+    }
+
+    /// Get the last N entries
+    pub fn tail(&self, n: usize) -> impl Iterator<Item = &HistoryEntry> {
         let skip = self.lines.len().saturating_sub(n);
-        self.lines.iter().skip(skip).map(|l| l.as_slice())
+        self.lines.iter().skip(skip)
     }
 
     /// Returns accumulated metrics
@@ -125,7 +167,7 @@ mod tests {
     #[test]
     fn test_push_single_line() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"hello world\n");
+        buf.push(b"hello world\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 1);
         assert_eq!(buf.lines().next().unwrap(), b"hello world");
     }
@@ -133,7 +175,7 @@ mod tests {
     #[test]
     fn test_push_multiple_lines() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"line 1\nline 2\nline 3\n");
+        buf.push(b"line 1\nline 2\nline 3\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 3);
 
         let lines: Vec<&[u8]> = buf.lines().collect();
@@ -145,10 +187,10 @@ mod tests {
     #[test]
     fn test_push_partial_line() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"partial");
+        buf.push(b"partial", HistoryEventType::Output);
         assert_eq!(buf.len(), 0); // Not yet a complete line
 
-        buf.push(b" line\n");
+        buf.push(b" line\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 1);
         assert_eq!(buf.lines().next().unwrap(), b"partial line");
     }
@@ -156,9 +198,9 @@ mod tests {
     #[test]
     fn test_push_across_multiple_calls() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"hello ");
-        buf.push(b"world\nfoo ");
-        buf.push(b"bar\n");
+        buf.push(b"hello ", HistoryEventType::Output);
+        buf.push(b"world\nfoo ", HistoryEventType::Output);
+        buf.push(b"bar\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 2);
 
         let lines: Vec<&[u8]> = buf.lines().collect();
@@ -169,7 +211,7 @@ mod tests {
     #[test]
     fn test_circular_eviction() {
         let mut buf = LineBuffer::new(3);
-        buf.push(b"line 1\nline 2\nline 3\nline 4\n");
+        buf.push(b"line 1\nline 2\nline 3\nline 4\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 3);
 
         let lines: Vec<&[u8]> = buf.lines().collect();
@@ -181,7 +223,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"line 1\nline 2\n");
+        buf.push(b"line 1\nline 2\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 2);
 
         buf.clear();
@@ -191,10 +233,10 @@ mod tests {
     #[test]
     fn test_tail() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"a\nb\nc\nd\ne\n");
+        buf.push(b"a\nb\nc\nd\ne\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 5);
 
-        let tail: Vec<&[u8]> = buf.tail(3).collect();
+        let tail: Vec<&[u8]> = buf.tail(3).map(|e| e.line.as_slice()).collect();
         assert_eq!(tail.len(), 3);
         assert_eq!(tail[0], b"c");
         assert_eq!(tail[1], b"d");
@@ -204,16 +246,16 @@ mod tests {
     #[test]
     fn test_tail_more_than_available() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"a\nb\n");
+        buf.push(b"a\nb\n", HistoryEventType::Output);
 
-        let tail: Vec<&[u8]> = buf.tail(10).collect();
+        let tail: Vec<_> = buf.tail(10).collect();
         assert_eq!(tail.len(), 2);
     }
 
     #[test]
     fn test_metrics() {
         let mut buf = LineBuffer::new(3);
-        buf.push(b"a\nb\nc\nd\ne\n");
+        buf.push(b"a\nb\nc\nd\ne\n", HistoryEventType::Output);
 
         let metrics = buf.metrics();
         assert_eq!(metrics.total_lines_added, 5);
@@ -225,7 +267,7 @@ mod tests {
     #[test]
     fn test_empty_lines() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"\n\n\n");
+        buf.push(b"\n\n\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 3);
 
         for line in buf.lines() {
@@ -236,8 +278,45 @@ mod tests {
     #[test]
     fn test_lines_with_ansi() {
         let mut buf = LineBuffer::new(100);
-        buf.push(b"\x1b[31mred text\x1b[0m\n\x1b[1mbold\x1b[0m\n");
+        buf.push(b"\x1b[31mred text\x1b[0m\n\x1b[1mbold\x1b[0m\n", HistoryEventType::Output);
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.lines().next().unwrap(), b"\x1b[31mred text\x1b[0m");
+    }
+
+    #[test]
+    fn test_event_type_preserved() {
+        let mut buf = LineBuffer::new(100);
+        buf.push(b"normal line\n", HistoryEventType::Output);
+        buf.push(b"sync line\n", HistoryEventType::SyncBlock);
+
+        let entries: Vec<_> = buf.entries().collect();
+        assert_eq!(entries[0].event_type, HistoryEventType::Output);
+        assert_eq!(entries[1].event_type, HistoryEventType::SyncBlock);
+    }
+
+    #[test]
+    fn test_insert_boundary() {
+        let mut buf = LineBuffer::new(100);
+        buf.push(b"before\n", HistoryEventType::Output);
+        buf.insert_boundary(HistoryEventType::FullRedrawBoundary);
+        buf.push(b"after\n", HistoryEventType::SyncBlock);
+
+        assert_eq!(buf.len(), 3);
+        let entries: Vec<_> = buf.entries().collect();
+        assert_eq!(entries[0].event_type, HistoryEventType::Output);
+        assert_eq!(entries[1].event_type, HistoryEventType::FullRedrawBoundary);
+        assert!(entries[1].line.is_empty());
+        assert_eq!(entries[2].event_type, HistoryEventType::SyncBlock);
+    }
+
+    #[test]
+    fn test_timestamps_monotonic() {
+        let mut buf = LineBuffer::new(100);
+        buf.push(b"a\nb\nc\n", HistoryEventType::Output);
+
+        let entries: Vec<_> = buf.entries().collect();
+        for window in entries.windows(2) {
+            assert!(window[1].timestamp >= window[0].timestamp);
+        }
     }
 }

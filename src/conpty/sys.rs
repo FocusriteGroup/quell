@@ -22,6 +22,8 @@ use windows::Win32::System::Threading::{
     PROCESS_INFORMATION, STARTUPINFOEXW,
 };
 
+use tracing::{debug, trace};
+
 use super::error::{ConPtyError, Result};
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
@@ -29,6 +31,7 @@ const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 /// Create an anonymous pipe. Returns (read_handle, write_handle).
 /// No inheritance attributes — ConPTY handles duplication internally.
 pub(super) fn create_pipe() -> Result<(HANDLE, HANDLE)> {
+    trace!("creating anonymous pipe");
     let mut read_handle = HANDLE::default();
     let mut write_handle = HANDLE::default();
 
@@ -47,6 +50,7 @@ pub(super) fn create_pseudo_console(
     input_read: HANDLE,
     output_write: HANDLE,
 ) -> Result<HPCON> {
+    debug!(cols, rows, "creating pseudoconsole");
     let size = COORD { X: cols, Y: rows };
     unsafe {
         CreatePseudoConsole(size, input_read, output_write, 0)
@@ -60,6 +64,7 @@ pub(super) fn create_pseudo_console(
 
 /// Resize the pseudoconsole.
 pub(super) fn resize_pseudo_console(hpc: HPCON, cols: i16, rows: i16) -> Result<()> {
+    debug!(cols, rows, "resizing pseudoconsole");
     let size = COORD { X: cols, Y: rows };
     unsafe {
         ResizePseudoConsole(hpc, size).map_err(|e| ConPtyError::Resize {
@@ -72,6 +77,7 @@ pub(super) fn resize_pseudo_console(hpc: HPCON, cols: i16, rows: i16) -> Result<
 
 /// Close the pseudoconsole.
 pub(super) fn close_pseudo_console(hpc: HPCON) {
+    debug!("closing pseudoconsole");
     unsafe {
         ClosePseudoConsole(hpc);
     }
@@ -150,6 +156,7 @@ pub(super) fn create_process_with_pseudo_console(
     hpc: HPCON,
     command_line: &str,
 ) -> Result<(HANDLE, HANDLE, u32)> {
+    debug!(command_line, "spawning process with pseudoconsole");
     // Allocate the attribute list — first call gets the required size
     let mut attr_list_size: usize = 0;
     unsafe {
