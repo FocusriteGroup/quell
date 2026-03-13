@@ -1,0 +1,83 @@
+//! Save and restore the parent terminal's console mode.
+//!
+//! When running as a proxy, we need to enable VT processing on stdout
+//! and VT input on stdin. On exit we restore the original modes.
+
+use windows::Win32::System::Console::{
+    CONSOLE_MODE, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
+    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
+use windows::Win32::Foundation::HANDLE;
+use tracing::{info, warn};
+
+use super::error::Result;
+use super::sys;
+
+/// Saved console modes for stdin and stdout.
+/// Restores original modes on drop.
+pub struct ConsoleMode {
+    stdin_handle: HANDLE,
+    stdout_handle: HANDLE,
+    original_stdin_mode: CONSOLE_MODE,
+    original_stdout_mode: CONSOLE_MODE,
+}
+
+impl ConsoleMode {
+    /// Save current console modes and set raw/VT modes for proxy operation.
+    ///
+    /// stdin: enables virtual terminal input + window input events
+    /// stdout: enables virtual terminal processing (pass-through VT sequences)
+    pub fn save_and_set_raw() -> Result<Self> {
+        let stdin_handle = sys::get_std_handle(STD_INPUT_HANDLE)?;
+        let stdout_handle = sys::get_std_handle(STD_OUTPUT_HANDLE)?;
+
+        let original_stdin_mode = sys::get_console_mode(stdin_handle)?;
+        let original_stdout_mode = sys::get_console_mode(stdout_handle)?;
+
+        info!(
+            stdin_mode = format!("0x{:X}", original_stdin_mode.0),
+            stdout_mode = format!("0x{:X}", original_stdout_mode.0),
+            "console modes saved"
+        );
+
+        // Set stdin to VT input mode
+        let new_stdin_mode = ENABLE_VIRTUAL_TERMINAL_INPUT
+            | ENABLE_PROCESSED_INPUT
+            | ENABLE_WINDOW_INPUT;
+        sys::set_console_mode(stdin_handle, new_stdin_mode)?;
+
+        // Set stdout to VT processing mode
+        let new_stdout_mode = original_stdout_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        sys::set_console_mode(stdout_handle, new_stdout_mode)?;
+
+        info!(
+            new_stdin_mode = format!("0x{:X}", new_stdin_mode.0),
+            new_stdout_mode = format!("0x{:X}", new_stdout_mode.0),
+            "console modes set for proxy operation"
+        );
+
+        Ok(Self {
+            stdin_handle,
+            stdout_handle,
+            original_stdin_mode,
+            original_stdout_mode,
+        })
+    }
+
+    /// Restore original console modes.
+    pub fn restore(&self) -> Result<()> {
+        sys::set_console_mode(self.stdin_handle, self.original_stdin_mode)?;
+        sys::set_console_mode(self.stdout_handle, self.original_stdout_mode)?;
+        info!("console modes restored");
+        Ok(())
+    }
+}
+
+impl Drop for ConsoleMode {
+    fn drop(&mut self) {
+        if let Err(e) = self.restore() {
+            warn!(error = %e, "failed to restore console mode in drop");
+        }
+    }
+}
