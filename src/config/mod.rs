@@ -4,12 +4,12 @@ pub use settings::AppConfig;
 
 use clap::Parser;
 
-/// Claude Terminal — Windows-native terminal proxy for Claude Code
+/// Terminal Exploration — Windows-native terminal proxy for AI CLI tools
 ///
 /// Eliminates scroll-jumping and flicker by intercepting VT output,
 /// tracking screen state, and sending only differential updates.
 #[derive(Parser, Debug)]
-#[command(name = "claude-terminal", version, about)]
+#[command(name = "terminal-exploration", version, about)]
 pub struct Cli {
     /// Command to run (defaults to "claude")
     #[arg(value_name = "COMMAND")]
@@ -24,10 +24,10 @@ pub struct Cli {
     pub log_level: String,
 
     /// Log file path (if not set, logs to stderr)
-    #[arg(long, env = "CLAUDE_TERMINAL_LOG_FILE")]
+    #[arg(long, env = "TERMINAL_EXPLORATION_LOG_FILE")]
     pub log_file: Option<String>,
 
-    /// Config file path (defaults to ~/.config/claude-terminal/config.toml)
+    /// Config file path (defaults to ~/.config/terminal-exploration/config.toml)
     #[arg(long, short)]
     pub config: Option<String>,
 

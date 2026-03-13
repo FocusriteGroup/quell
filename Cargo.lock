@@ -284,33 +284,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "claude-terminal"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "criterion",
- "crossbeam-channel",
- "dirs 6.0.0",
- "memchr",
- "predicates",
- "pretty_assertions",
- "serde",
- "tempfile",
- "termwiz",
- "test-log",
- "thiserror 2.0.18",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "vt100",
- "vte 0.15.0",
- "windows",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1479,6 +1452,33 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "terminal-exploration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "criterion",
+ "crossbeam-channel",
+ "dirs 6.0.0",
+ "memchr",
+ "predicates",
+ "pretty_assertions",
+ "serde",
+ "tempfile",
+ "termwiz",
+ "test-log",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "vt100",
+ "vte 0.15.0",
+ "windows",
 ]
 
 [[package]]

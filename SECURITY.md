@@ -17,39 +17,92 @@ The proxy also processes **all keyboard input** from the user, forwarding it to 
 
 ## What The Proxy Does NOT Do
 
-- **No network access.** The proxy binary makes zero network connections. It communicates only with the child process (via ConPTY pipes) and the user's terminal (via stdin/stdout).
-- **No content logging.** Output content is never written to log files by default. Logging captures only metadata: frame counts, byte throughput, render timing, errors.
-- **No telemetry.** No usage data is collected or transmitted.
-- **No data persistence.** Terminal content exists only in memory (the history buffer) and is discarded when the proxy exits. Phase 2's session persistence is opt-in and stores data only on the local filesystem.
+- **No network access.** The proxy binary makes zero network connections. It communicates only with the child process (via ConPTY pipes) and the user's terminal (via stdin/stdout). You can verify this yourself with `netstat -b` or Sysinternals Process Monitor.
+- **No content logging.** Output content is never written to log files at default log levels (`info`, `debug`). These levels capture only metadata: frame counts, byte throughput, render timing, errors. The `trace` level may include raw VT bytes and will warn you at startup if enabled.
+- **No telemetry.** No usage data is collected or transmitted. Ever.
+- **No data persistence.** Terminal content exists only in memory (the history buffer) and is discarded when the proxy exits.
 
 ## Security Measures
 
-### URL Scheme Whitelisting
-AI-generated output is untrusted content. The proxy filters OSC 8 hyperlinks, allowing only `http://`, `https://`, and `file://` schemes. Other schemes (which have been used in real CVEs — `ssh://`, `x-man-page://`) are stripped.
+### Escape Sequence Filtering
 
-### No Modification of Content
-The proxy transforms the *rendering* of output (VT differential updates) but never modifies the *content*. What the AI tool writes is what the user sees — just rendered more efficiently.
+AI-generated output is untrusted content. The proxy classifies VT escape sequences and blocks known attack vectors:
+
+**Blocked sequences** (never forwarded to your terminal):
+- OSC 52 (clipboard read/write) — prevents child process from accessing your clipboard
+- OSC 50 (font query) — prevents font name echo attacks
+- C1 control bytes (0x80-0x9F) — prevents ambiguous interpretation attacks
+
+**Filtered sequences** (forwarded with sanitization):
+- OSC 8 hyperlinks — URL scheme whitelist (`http`, `https`, `file` only). Schemes used in real CVEs (`ssh://`, `x-man-page://`) are stripped.
+- OSC 2 window title — control characters stripped from title text
+
+**Allowed sequences** (safe, forwarded as-is):
+- Cursor movement, text styling (SGR), screen management, DEC mode 2026 sync markers, scrolling
+
+### No Terminal Query Responses
+
+The proxy never responds to terminal query sequences (DA, DECRQSS, title report) on behalf of itself. This prevents echoback attacks — the most common terminal vulnerability class — where attacker-controlled data is injected as terminal input.
+
+### Config File Safety
+
+The proxy does not execute commands or shell expansions from configuration values. Configuration is limited to declarative settings (numeric values, string identifiers, lists).
 
 ### Raw Mode Restoration
+
 The proxy saves and restores terminal mode on exit, including on panic. A crash cannot leave the terminal in an unusable state.
 
 ## Threat Model
 
-### What could go wrong if the proxy had a vulnerability:
-- An attacker with code execution on the user's machine could modify the proxy binary to intercept secrets from terminal output
-- A malicious dependency in the build chain could inject data exfiltration
+### Trusted
+- The user's terminal emulator (it already sees everything)
+- The user's configuration files in `%APPDATA%`
+- The Rust standard library and direct dependencies
 
-### Mitigations:
-- The project is open source — all code is auditable
-- Minimal dependency surface (only well-known Rust crates)
-- Phase 2 distributed binaries will be code-signed
-- Users can build from source to eliminate supply chain risk
+### Untrusted
+- All output from the child process (AI tools may operate on malicious repositories)
+- OSC 8 hyperlinks in child output (display text may differ from actual URL)
+- Project-local configuration files (could be placed by a malicious repository)
+
+### Attack Scenarios Considered
+
+| Scenario | Mitigation |
+|----------|------------|
+| Malicious child emits crafted escape sequences to attack outer terminal | Escape sequence filtering (block/filter/allow classification) |
+| Child emits OSC 8 link with spoofed display text | URL scheme whitelist + mismatch detection (Phase 2) |
+| Child attempts clipboard read via OSC 52 | OSC 52 stripped entirely |
+| Supply chain compromise of a dependency | `cargo-audit` in CI, minimal dependency surface |
+| Modified binary distributed as the real tool | SHA256 checksums on releases, code signing (Phase 2) |
+| Malicious `.terminal-exploration.toml` in a cloned repo | Warning on project-local config, no command execution from config |
+| Trace logging captures secrets to log file | Startup warning when trace enabled; default level captures metadata only |
+
+## Vulnerability Reporting
+
+If you discover a security vulnerability, please report it through [GitHub's Private Vulnerability Reporting](https://github.com/FurbySoup/terminal-exploration/security/advisories/new) rather than opening a public issue. We will acknowledge receipt within 48 hours and aim to release a fix within 7 days for critical issues.
 
 ## Verification
 
-Users can verify the proxy makes no network connections:
-- Windows: `netstat -b` while the proxy is running — the binary should have zero network connections
-- Process Monitor (Sysinternals): filter by process name, verify no network activity
+Users can verify the proxy's security claims:
+
+**No network access:**
+```
+# While the proxy is running:
+netstat -b | findstr terminal-exploration
+# Should return nothing
+```
+
+**No content in logs:**
+```
+# Run with default log level, then inspect:
+findstr /i "api_key\|password\|secret" logs\terminal-exploration.log
+# Should return nothing (only metadata is logged)
+```
+
+**Dependency audit:**
+```
+cargo audit
+cargo deny check
+```
 
 ## Licensing
 

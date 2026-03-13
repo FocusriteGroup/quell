@@ -3,42 +3,55 @@
 // Coordinates:
 // - ConPTY I/O threads (input + output)
 // - Sync block detection
-// - VT differential rendering
 // - History management
-// - Render coalescing
 //
 // Architecture:
 //   Input thread:  Real stdin → ConPTY input pipe
 //   Output thread: ConPTY output pipe → channel → main thread
-//   Main thread:   Sync detector → VT emulator → Diff renderer → Real stdout
+//   Watcher thread: WaitForSingleObject on child process → shutdown signal
+//   Main thread:   Sync detector → stdout passthrough + history + metrics
+//
+// Phase 1 strategy: transparent passthrough with instrumentation.
+// All child output goes directly to stdout. The sync detector and history
+// still process data for metrics and future Phase 2 use. Differential
+// rendering is deferred to Phase 2 (Tauri terminal) where we control
+// the display surface.
+//
+// Shutdown sequence (critical for ConPTY):
+//   1. Child process exits → watcher thread sends ChildExited signal
+//   2. Main loop breaks
+//   3. ClosePseudoConsole is called (via session Drop) — this closes the
+//      output pipe. MUST happen while the output thread is still reading
+//      (pipe read end open), otherwise ClosePseudoConsole deadlocks.
+//   4. Output thread gets pipe EOF and exits
+//   5. Input thread is signaled via shutdown event
 
 pub mod events;
 pub mod render_coalescer;
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, select, tick, Receiver, Sender};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::AppConfig;
 use crate::conpty::ConPtySession;
 use crate::history::LineBuffer;
-use crate::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
+use crate::vt::{SyncBlockDetector, SyncEvent};
 
 use events::{event_channel, ProxyEvent};
-use render_coalescer::RenderCoalescer;
 
 /// Reason a thread is signaling shutdown
 #[derive(Debug, Clone)]
 enum ShutdownReason {
     InputEof,
     OutputEof,
-    CtrlC,
+    ChildExited,
     IoError(String),
 }
 
@@ -75,16 +88,12 @@ impl Proxy {
             .take_io()
             .context("failed to take I/O handles from session")?;
 
-        // Create processing pipeline components
+        // Create pipeline components for metrics (output goes directly to stdout)
         let (cols, rows) = self.session.size();
         let mut detector = SyncBlockDetector::new();
-        let mut renderer = DiffRenderer::new(rows as u16, cols as u16);
         let mut history = LineBuffer::new(self.config.history_lines);
-        let mut coalescer = RenderCoalescer::new(
-            Duration::from_millis(self.config.render_delay_ms),
-            Duration::from_millis(self.config.sync_delay_ms),
-            Duration::from_nanos(16_666_667), // ~60fps
-        );
+        let mut total_bytes: u64 = 0;
+        let mut chunk_count: u64 = 0;
 
         // Channels
         let (output_tx, output_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(64);
@@ -93,12 +102,31 @@ impl Proxy {
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-        // Set up Ctrl+C handler
-        {
-            let stx = shutdown_tx.clone();
-            let flag = shutdown_flag.clone();
-            install_ctrlc_handler(stx, flag);
-        }
+        // No Ctrl+C handler — with ENABLE_PROCESSED_INPUT disabled in console mode,
+        // Ctrl+C arrives as byte 0x03 via stdin, which our input thread writes to
+        // ConPTY's input pipe. ConPTY then generates CTRL_C_EVENT for the child.
+        // This gives natural Ctrl+C forwarding without interception.
+
+        // Child exit watcher thread: detects when the child process exits.
+        // ConPTY does NOT close the output pipe when the child exits — you must
+        // call ClosePseudoConsole to break the pipe. This thread signals the main
+        // loop so we can initiate the correct shutdown sequence.
+        let child_process_raw = self.session.process_handle_raw();
+        let watcher_shutdown_tx = shutdown_tx.clone();
+        thread::Builder::new()
+            .name("child-watcher".into())
+            .spawn(move || {
+                use windows::Win32::Foundation::HANDLE;
+                use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+
+                let handle = HANDLE(child_process_raw as *mut _);
+                unsafe {
+                    WaitForSingleObject(handle, INFINITE);
+                }
+                info!("child process exited (watcher)");
+                let _ = watcher_shutdown_tx.try_send(ShutdownReason::ChildExited);
+            })
+            .context("failed to spawn child watcher thread")?;
 
         // Output thread: reads from ConPTY output pipe, sends to main thread
         let output_shutdown_tx = shutdown_tx.clone();
@@ -136,48 +164,36 @@ impl Proxy {
             })
             .context("failed to spawn output thread")?;
 
-        // Input thread: reads from real stdin, writes to ConPTY input pipe
+        // Input thread: reads from real stdin, writes to ConPTY input pipe.
+        //
+        // When stdin is a real console, we use WaitForMultipleObjects so the
+        // thread can be cleanly woken up via a shutdown event (instead of
+        // blocking forever in ReadConsole, which corrupts terminal state on
+        // forced exit). When stdin is a pipe (e.g. in tests), we fall back
+        // to blocking read since the thread will unblock when the pipe closes.
         let input_shutdown_tx = shutdown_tx.clone();
         let input_flag = shutdown_flag.clone();
-        let _input_thread = thread::Builder::new()
+
+        // Create a manual-reset event to signal the input thread to shut down
+        let shutdown_event = create_shutdown_event()
+            .context("failed to create shutdown event")?;
+        let shutdown_event_handle = shutdown_event;
+
+        let stdin_is_console = is_stdin_console();
+        debug!(stdin_is_console, "input thread mode selected");
+
+        let input_thread = thread::Builder::new()
             .name("conpty-input".into())
             .spawn(move || {
-                use std::io::Read;
-
-                let stdin = std::io::stdin();
-                let mut stdin = stdin.lock();
-                let mut buf = vec![0u8; 1024];
-
-                loop {
-                    if input_flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    match stdin.read(&mut buf) {
-                        Ok(0) => {
-                            info!("stdin EOF");
-                            let _ = input_shutdown_tx.try_send(ShutdownReason::InputEof);
-                            break;
-                        }
-                        Ok(n) => {
-                            debug!(bytes = n, "stdin read");
-                            if let Err(e) = input_write.write_all(&buf[..n]) {
-                                if !input_flag.load(Ordering::Relaxed) {
-                                    warn!(error = %e, "input pipe write error");
-                                    let _ = input_shutdown_tx
-                                        .try_send(ShutdownReason::IoError(e.to_string()));
-                                }
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            if !input_flag.load(Ordering::Relaxed) {
-                                warn!(error = %e, "stdin read error");
-                                let _ = input_shutdown_tx
-                                    .try_send(ShutdownReason::IoError(e.to_string()));
-                            }
-                            break;
-                        }
-                    }
+                if stdin_is_console {
+                    run_console_input_loop(
+                        input_write,
+                        input_flag,
+                        input_shutdown_tx,
+                        shutdown_event_handle,
+                    );
+                } else {
+                    run_pipe_input_loop(input_write, input_flag, input_shutdown_tx);
                 }
             })
             .context("failed to spawn input thread")?;
@@ -187,33 +203,36 @@ impl Proxy {
 
         let mut stdout = std::io::stdout().lock();
         let mut last_size = (cols, rows);
-        let mut frame_number: u64 = 0;
 
-        info!("entering main proxy loop (differential rendering active)");
+        info!("entering main proxy loop (passthrough mode)");
 
         loop {
-            // Compute timeout for select: either the coalescer deadline or a long default
-            let timeout = coalescer
-                .time_until_render()
-                .unwrap_or(Duration::from_millis(100));
-
             select! {
                 recv(output_rx) -> msg => {
                     match msg {
                         Ok(data) => {
-                            // Process through sync detector
+                            // Write directly to stdout — transparent passthrough
+                            if let Err(e) = stdout.write_all(&data) {
+                                error!(error = %e, "failed to write to stdout");
+                                break;
+                            }
+                            if let Err(e) = stdout.flush() {
+                                error!(error = %e, "failed to flush stdout");
+                                break;
+                            }
+
+                            total_bytes += data.len() as u64;
+                            chunk_count += 1;
+
+                            // Feed pipeline for metrics (does not affect output)
                             let events = detector.process(&data);
                             for event in events {
                                 match event {
                                     SyncEvent::PassThrough(bytes) => {
-                                        renderer.feed(bytes);
                                         history.push(bytes);
-                                        coalescer.notify_data();
                                     }
                                     SyncEvent::SyncBlock { data: block_data, is_full_redraw } => {
-                                        renderer.feed(&block_data);
                                         history.push(&block_data);
-                                        coalescer.notify_sync_block();
 
                                         let _ = self.event_tx.try_send(
                                             ProxyEvent::SyncBlockComplete {
@@ -244,88 +263,55 @@ impl Proxy {
                     }
                 }
                 recv(resize_tick) -> _ => {
-                    if let Some((new_cols, new_rows)) = crate::conpty::get_terminal_size() {
-                        if (new_cols, new_rows) != last_size {
-                            info!(
-                                old_cols = last_size.0,
-                                old_rows = last_size.1,
-                                new_cols,
-                                new_rows,
-                                "terminal resize detected"
-                            );
-                            if let Err(e) = self.session.resize(new_cols, new_rows) {
-                                warn!(error = %e, "failed to resize ConPTY");
-                            }
-                            renderer.resize(new_rows as u16, new_cols as u16);
-                            last_size = (new_cols, new_rows);
-
-                            let _ = self.event_tx.try_send(ProxyEvent::Resize {
-                                cols: new_cols,
-                                rows: new_rows,
-                            });
-                        } else {
-                            trace!("resize poll: size unchanged");
+                    if let Some((new_cols, new_rows)) = crate::conpty::get_terminal_size()
+                        && (new_cols, new_rows) != last_size
+                    {
+                        info!(
+                            old_cols = last_size.0,
+                            old_rows = last_size.1,
+                            new_cols,
+                            new_rows,
+                            "terminal resize detected"
+                        );
+                        if let Err(e) = self.session.resize(new_cols, new_rows) {
+                            warn!(error = %e, "failed to resize ConPTY");
                         }
+                        last_size = (new_cols, new_rows);
+
+                        let _ = self.event_tx.try_send(ProxyEvent::Resize {
+                            cols: new_cols,
+                            rows: new_rows,
+                        });
                     }
                 }
-                default(timeout) => {
-                    // Timeout expired — check if we should render
-                    trace!("select timeout (coalescer check)");
-                }
-            }
-
-            // After every select! arm: try to render if coalescer says it's time
-            if coalescer.should_render() && renderer.is_dirty() {
-                if let Some(diff) = renderer.render() {
-                    let diff_len = diff.len();
-                    if let Err(e) = stdout.write_all(&diff) {
-                        error!(error = %e, "failed to write to stdout");
-                        break;
-                    }
-                    if let Err(e) = stdout.flush() {
-                        error!(error = %e, "failed to flush stdout");
-                        break;
-                    }
-
-                    frame_number += 1;
-                    debug!(
-                        frame = frame_number,
-                        diff_bytes = diff_len,
-                        "frame rendered"
-                    );
-
-                    let _ = self.event_tx.try_send(ProxyEvent::RenderComplete {
-                        output_bytes: diff_len,
-                        diff_bytes: diff_len,
-                        frame_number,
-                    });
-                }
-                coalescer.mark_rendered();
             }
         }
 
-        // Final flush: render any remaining dirty state
-        if renderer.is_dirty()
-            && let Some(diff) = renderer.render()
-        {
-            let _ = stdout.write_all(&diff);
-            let _ = stdout.flush();
-            frame_number += 1;
-            debug!(frame = frame_number, "final frame rendered");
-        }
+        // Release stdout lock before shutdown (we're done writing)
+        drop(stdout);
 
         // Signal all threads to stop
         info!("shutting down I/O threads");
         shutdown_flag.store(true, Ordering::Relaxed);
 
-        // Wait for child exit code before dropping session
-        let exit_code = match self.session.wait_for_child() {
-            Ok(code) => {
+        // Signal the input thread's shutdown event so it wakes up from WaitForMultipleObjects
+        signal_shutdown_event(shutdown_event_handle);
+
+        // Get exit code before closing ConPTY.
+        // The child may have already exited (ChildExited signal) or the output pipe
+        // may have closed first (for short-lived commands). Either way, try to get
+        // the exit code with a short timeout.
+        let exit_code = match self.session.try_wait_for_child(2000) {
+            Ok(Some(code)) => {
                 info!(exit_code = code, "child exited");
                 let _ = self.event_tx.try_send(ProxyEvent::ChildExited {
                     exit_code: code,
                 });
                 code
+            }
+            Ok(None) => {
+                warn!("child did not exit within timeout");
+                0
             }
             Err(e) => {
                 warn!(error = %e, "failed to get child exit code");
@@ -333,24 +319,26 @@ impl Proxy {
             }
         };
 
-        // Drop session to close ConPTY — unblocks the output thread
+        // Drop session — this calls ClosePseudoConsole, which closes the ConPTY
+        // output pipe. The output thread is still reading from the pipe (its read
+        // end is open), so ClosePseudoConsole can flush without deadlocking.
+        // After this, the output thread will get pipe EOF and exit.
+        info!("closing ConPTY session");
         drop(self.session);
 
-        // Join output thread
+        // Wait for the output thread — it should exit quickly after pipe EOF
+        info!("waiting for output thread");
         let _ = output_thread.join();
 
-        // Log final metrics
-        let sync_metrics = detector.metrics();
-        let diff_metrics = renderer.metrics();
-        let hist_metrics = history.metrics();
+        // The input thread is NOT joined — on Windows, ReadFile on a console
+        // handle can block even after WaitForMultipleObjects signals (non-character
+        // console events trigger the signal but ReadFile only returns on character
+        // input). The thread will be killed when the process exits.
+        drop(input_thread);
+
         info!(
-            frames = frame_number,
-            sync_blocks = sync_metrics.sync_blocks_detected,
-            full_redraws = sync_metrics.full_redraws_detected,
-            diff_renders = diff_metrics.diff_renders,
-            full_renders = diff_metrics.full_renders,
-            compression_pct = format!("{:.1}", diff_metrics.compression_ratio() * 100.0),
-            history_lines = hist_metrics.current_size,
+            total_bytes,
+            chunk_count,
             "proxy shutdown complete"
         );
 
@@ -358,36 +346,162 @@ impl Proxy {
     }
 }
 
-fn install_ctrlc_handler(shutdown_tx: Sender<ShutdownReason>, flag: Arc<AtomicBool>) {
-    use windows::Win32::Foundation::BOOL;
-    use windows::Win32::System::Console::SetConsoleCtrlHandler;
-
-    struct CtrlState {
-        tx: Sender<ShutdownReason>,
-        flag: Arc<AtomicBool>,
-    }
-    // SAFETY: OnceLock ensures single initialization. The handler only reads.
-    unsafe impl Sync for CtrlState {}
-
-    static STATE: OnceLock<CtrlState> = OnceLock::new();
-    STATE.get_or_init(|| CtrlState {
-        tx: shutdown_tx,
-        flag,
-    });
-
-    unsafe extern "system" fn handler(ctrl_type: u32) -> BOOL {
-        // CTRL_C_EVENT = 0
-        if ctrl_type == 0 {
-            if let Some(state) = STATE.get() {
-                state.flag.store(true, Ordering::Relaxed);
-                let _ = state.tx.try_send(ShutdownReason::CtrlC);
-            }
-            return BOOL(1);
-        }
-        BOOL(0)
-    }
+/// Check if stdin is a real console (vs a pipe in test environments).
+fn is_stdin_console() -> bool {
+    use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
 
     unsafe {
-        let _ = SetConsoleCtrlHandler(Some(Some(handler)), true);
+        if let Ok(handle) = GetStdHandle(STD_INPUT_HANDLE) {
+            let mut mode = windows::Win32::System::Console::CONSOLE_MODE(0);
+            GetConsoleMode(handle, &mut mode).is_ok()
+        } else {
+            false
+        }
+    }
+}
+
+/// Create a manual-reset Windows Event for signaling shutdown to the input thread.
+/// Returns the raw handle value as usize (safe to send across threads).
+fn create_shutdown_event() -> Result<usize> {
+    use windows::Win32::System::Threading::CreateEventW;
+
+    let handle = unsafe {
+        CreateEventW(
+            None,  // default security
+            true,  // manual reset
+            false, // initially non-signaled
+            None,  // unnamed
+        )
+        .context("CreateEventW failed")?
+    };
+    Ok(handle.0 as usize)
+}
+
+/// Signal the shutdown event to wake up the input thread.
+fn signal_shutdown_event(event_handle: usize) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Threading::SetEvent;
+
+    let handle = HANDLE(event_handle as *mut _);
+    unsafe {
+        let _ = SetEvent(handle);
+    }
+}
+
+/// Console input loop: uses WaitForMultipleObjects to be cancellable via shutdown event.
+/// This prevents the thread from blocking forever in ReadConsole, which would corrupt
+/// terminal state when the process exits with the thread still mid-syscall.
+fn run_console_input_loop(
+    input_write: crate::conpty::OwnedHandle,
+    flag: Arc<AtomicBool>,
+    shutdown_tx: Sender<ShutdownReason>,
+    shutdown_event_handle: usize,
+) {
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::Storage::FileSystem::ReadFile;
+    use windows::Win32::System::Console::{
+        GetNumberOfConsoleInputEvents, GetStdHandle, STD_INPUT_HANDLE,
+    };
+    use windows::Win32::System::Threading::WaitForMultipleObjects;
+
+    let stdin_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE).unwrap_or(HANDLE::default()) };
+    let event_handle = HANDLE(shutdown_event_handle as *mut _);
+    let handles = [stdin_handle, event_handle];
+    let mut buf = vec![0u8; 1024];
+
+    loop {
+        if flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Wait for either stdin data or shutdown event (100ms timeout for flag checks)
+        let wait_result = unsafe { WaitForMultipleObjects(&handles, false, 100) };
+
+        if wait_result == WAIT_OBJECT_0 {
+            // stdin signaled — check if there are actual input events
+            let mut num_events = 0u32;
+            let has_events = unsafe {
+                GetNumberOfConsoleInputEvents(stdin_handle, &mut num_events).is_ok()
+                    && num_events > 0
+            };
+
+            if !has_events {
+                continue;
+            }
+
+            let mut bytes_read = 0u32;
+            let read_ok = unsafe {
+                ReadFile(stdin_handle, Some(&mut buf), Some(&mut bytes_read), None).is_ok()
+            };
+
+            if !read_ok || bytes_read == 0 {
+                info!("stdin EOF");
+                let _ = shutdown_tx.try_send(ShutdownReason::InputEof);
+                break;
+            }
+
+            debug!(bytes = bytes_read, "stdin read");
+            if let Err(e) = input_write.write_all(&buf[..bytes_read as usize]) {
+                if !flag.load(Ordering::Relaxed) {
+                    warn!(error = %e, "input pipe write error");
+                    let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
+                }
+                break;
+            }
+        } else if wait_result.0 == WAIT_OBJECT_0.0 + 1 {
+            // Shutdown event signaled
+            info!("input thread: shutdown event received");
+            break;
+        }
+        // Timeout or error — loop back and check flag
+    }
+
+    // Clean up the event handle
+    unsafe {
+        let _ = windows::Win32::Foundation::CloseHandle(event_handle);
+    }
+}
+
+/// Pipe input loop: simple blocking read, used when stdin is a pipe (e.g. in tests).
+/// The thread will unblock when the pipe is closed or the process exits.
+fn run_pipe_input_loop(
+    input_write: crate::conpty::OwnedHandle,
+    flag: Arc<AtomicBool>,
+    shutdown_tx: Sender<ShutdownReason>,
+) {
+    use std::io::Read;
+
+    let stdin = std::io::stdin();
+    let mut stdin = stdin.lock();
+    let mut buf = vec![0u8; 1024];
+
+    loop {
+        if flag.load(Ordering::Relaxed) {
+            break;
+        }
+        match stdin.read(&mut buf) {
+            Ok(0) => {
+                info!("stdin EOF");
+                let _ = shutdown_tx.try_send(ShutdownReason::InputEof);
+                break;
+            }
+            Ok(n) => {
+                debug!(bytes = n, "stdin read");
+                if let Err(e) = input_write.write_all(&buf[..n]) {
+                    if !flag.load(Ordering::Relaxed) {
+                        warn!(error = %e, "input pipe write error");
+                        let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
+                    }
+                    break;
+                }
+            }
+            Err(e) => {
+                if !flag.load(Ordering::Relaxed) {
+                    warn!(error = %e, "stdin read error");
+                    let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
+                }
+                break;
+            }
+        }
     }
 }

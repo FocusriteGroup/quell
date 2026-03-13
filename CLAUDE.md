@@ -1,13 +1,13 @@
-# Claude Terminal — Project Guide
+# Terminal Exploration — Project Guide
 
 ## What This Is
 
-A Windows-native terminal proxy (and eventually standalone terminal) for Claude Code that eliminates scroll-jumping and flicker. It intercepts Claude Code's VT output via ConPTY, tracks screen state with a VT100 emulator, and sends only differential updates to the display.
+A Windows-native terminal proxy (and eventually standalone terminal) for AI CLI tools that eliminates scroll-jumping and flicker. It intercepts child process VT output via ConPTY, tracks screen state with a VT100 emulator, and sends only differential updates to the display.
 
 ## Architecture
 
 ```
-User's Terminal ←→ claude-terminal (proxy) ←→ ConPTY ←→ Claude Code (node.exe)
+User's Terminal ←→ terminal-exploration (proxy) ←→ ConPTY ←→ AI CLI tool (e.g. Claude Code)
 ```
 
 Core modules:
@@ -62,7 +62,7 @@ RUST_LOG=debug cargo test           # Tests with log output
 
 **Log format:**
 - Structured fields: `tracing::info!(bytes = data.len(), elapsed_ms = elapsed, "render complete")`
-- File output: `logs/claude-terminal.log` (rotated, configurable)
+- File output: `logs/terminal-exploration.log` (rotated, configurable)
 - Console output: Controlled by `RUST_LOG` env var
 
 **When adding a feature, you MUST add:**

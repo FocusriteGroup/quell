@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 
 use windows::Win32::System::Console::{
-    CONSOLE_MODE, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    CONSOLE_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
     STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
@@ -57,9 +57,13 @@ impl ConsoleMode {
             )
         });
 
-        // Set stdin to VT input mode
+        // Set stdin to raw VT input mode.
+        // ENABLE_PROCESSED_INPUT is intentionally omitted — with it enabled,
+        // Ctrl+C is intercepted by the console subsystem and never reaches our
+        // stdin read loop. Without it, Ctrl+C arrives as byte 0x03, which our
+        // input thread writes to ConPTY's pipe, and ConPTY generates the
+        // CTRL_C_EVENT for the child process naturally.
         let new_stdin_mode = ENABLE_VIRTUAL_TERMINAL_INPUT
-            | ENABLE_PROCESSED_INPUT
             | ENABLE_WINDOW_INPUT;
         sys::set_console_mode(stdin_handle, new_stdin_mode)?;
 

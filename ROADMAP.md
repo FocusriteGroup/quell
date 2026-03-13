@@ -10,6 +10,10 @@
 
 ---
 
+> **Live-test log (2026-03-13):** Proxy tested against real Claude Code — streaming, tool use, resize, and Ctrl+C scenarios validated.
+
+---
+
 ## Phase 1: CLI Proxy
 
 **Goal:** Single binary that runs in any Windows terminal and eliminates scroll-jumping for all AI CLI tools. Lightweight, fast, terminal-native.
@@ -42,12 +46,15 @@
 - [ ] Graceful shutdown (child exit detection)
 - [ ] Event hook system: emit lightweight events (sync block complete, screen region changed, prompt detected) into a channel — Phase 1 ignores these, Phase 2 consumes them
 
-### Milestone 1.4: History & Filtering
-- [ ] Escape filter: byte-level query stripping
-- [ ] Escape filter: parse-level whitelist (via termwiz)
+### Milestone 1.4: History, Filtering & Sequence Security
+- [ ] Escape filter layer 1 (byte-level): strip OSC 52 (clipboard), OSC 50 (font query), C1 control bytes (0x80-0x9F)
+- [ ] Escape filter layer 2 (parse-level via termwiz): classify sequences as allow/filter/block per SECURITY.md tables
+- [ ] Block terminal query responses: never echo DA, DECRQSS, title report on behalf of the proxy
+- [ ] Sanitize OSC 2 (window title): strip control characters from title text before forwarding
 - [ ] History accumulation from sync blocks
 - [ ] Full-redraw detection and history clear
 - [ ] History entries include metadata (timestamp, event type) for Phase 2 structured view
+- [ ] `trace!` level startup warning when content-level logging is enabled
 
 ### Milestone 1.5: Live Proving
 - [ ] Test with Claude Code streaming responses (primary)
@@ -57,6 +64,8 @@
 - [ ] Test with Windows Terminal, VS Code terminal, conhost
 - [ ] Long session stability (hours of use)
 - [ ] Test OSC 8 passthrough behavior through ConPTY (determines 1.6 feasibility)
+- [ ] Fuzz VT processing pipeline with `cargo-fuzz` (crafted escape sequences, extreme parameters)
+- [ ] Verify panic recovery: malformed sequences crash emulator state, not the proxy process
 
 ### Milestone 1.6: Keyboard & Link Security
 - [ ] Lightweight tool detection from child process command string + `--tool` CLI flag
@@ -69,6 +78,58 @@
 - [ ] OSC 8 URL scheme whitelist: allow `http`, `https`, `file` — strip/neutralize others
 - [ ] `warn!` log for blocked URL schemes in child output
 - [ ] All standard shortcuts pass through unmodified (Ctrl+C, Ctrl+D, Ctrl+L, Ctrl+R, etc.)
+
+### Milestone 1.7: Release Readiness
+- [ ] `cargo-audit` in CI (check against RustSec Advisory Database)
+- [ ] `cargo-deny` in CI (license checking, crate banning, advisory flags)
+- [ ] SHA256 checksums published alongside release binaries
+- [ ] Enable GitHub Private Vulnerability Reporting on the repository
+- [ ] SECURITY.md finalized with vulnerability reporting instructions
+- [ ] Remove project-local config search path (only `--config` flag and `%APPDATA%`) or add warning on project-local config load
+- [ ] Distribution: portable .exe + scoop manifest
+- [ ] Distribution: winget manifest (if scoop adoption is good)
+- [ ] LICENSE file (MIT)
+
+### Milestone 1.8: Rename to "quell"
+
+Rename from `terminal-exploration` to `quell` across all code and docs. Do this before public release so users never see the old name.
+
+**Cargo.toml:**
+- [ ] `name = "quell"`
+- [ ] `[[bin]] name = "quell"`
+- [ ] `[[lib]] name = "quell"` (if added)
+- [ ] `repository = "https://github.com/FurbySoup/quell"` (after GitHub rename)
+- [ ] `description` updated to reference "quell"
+- [ ] Regenerate `Cargo.lock`
+
+**Source code (src/):**
+- [ ] `src/main.rs` — log messages: "quell starting", "quell shutting down"
+- [ ] `src/main.rs` — default log filename: `quell.log`
+- [ ] `src/config/mod.rs` — `#[command(name = "quell")]`
+- [ ] `src/config/mod.rs` — help text / about string
+- [ ] `src/config/settings.rs` — config dir: `p.join("quell")`
+
+**Tests:**
+- [ ] `tests/integration/main.rs` — all `use terminal_exploration::` → `use quell::`
+
+**Documentation:**
+- [ ] `CLAUDE.md` — project title, architecture diagram, log paths, all references
+- [ ] `ROADMAP.md` — title, config examples, log paths
+- [ ] `SECURITY.md` — project description, config file names (`.quell.toml`), verification commands, GitHub PVR URL
+- [ ] `research/USER-PERSONAS.md` — all "terminal-exploration" references → "quell"
+- [ ] `research/UX-FEATURES.md` — all "terminal-exploration" references → "quell"
+- [ ] `research/PRIVACY-TRUST-MODEL.md` — config file references, comparison table
+- [ ] `research/INITIAL PROJECT RESEARCH.md` — "claude-terminal" references (historical, may leave as-is)
+
+**GitHub:**
+- [ ] Rename repository: `FurbySoup/terminal-exploration` → `FurbySoup/quell`
+- [ ] Update repo description
+- [ ] Reserve `quell` on crates.io (publish placeholder or first release)
+
+**Config paths:**
+- [ ] `%APPDATA%\quell\config.toml` (was `terminal-exploration`)
+- [ ] `logs/quell.log` (was `terminal-exploration.log`)
+- [ ] Project-local config: `.quell.toml` or `quell.toml` (if kept)
 
 ### Phase 1 Config Surface
 ```toml
@@ -149,8 +210,18 @@ level = "info"
 ### Milestone 2.6: Polish & Distribution
 - [ ] Auto-launch configured AI tool on startup
 - [ ] Keybinding configuration (all navigation shortcuts configurable)
-- [ ] Windows installer (MSI or NSIS)
+- [ ] Code signing for Windows binaries (OV certificate or SignPath.io for open source)
+- [ ] Windows installer (MSI or NSIS) — signed
 - [ ] Single-binary download option alongside installer
+- [ ] Tauri auto-updater with cryptographic signature verification
+
+### Milestone 2.7: Session Security (if persistence enabled)
+- [ ] Session persistence defaults to OFF — opt-in only
+- [ ] Session data stored in `%APPDATA%` only (never in project directory)
+- [ ] Encrypt session data at rest using Windows DPAPI
+- [ ] Configurable retention period (default 30 days, auto-expiry)
+- [ ] "Clear all history" command that reliably deletes all session data
+- [ ] PRIVACY.md documenting what's stored, where, how to delete, encryption details
 
 ---
 
@@ -202,3 +273,7 @@ level = "info"
 5. **Extension over rewrite.** Phase 1 pipeline includes event hooks and multi-instance support so Phase 2 extends rather than replaces the core.
 
 6. **Security at the proxy layer.** URL scheme whitelisting and OSC 8 filtering happen in the Rust proxy, not just the frontend. The proxy is the trust boundary between AI output and the user.
+
+7. **Child output is untrusted.** All VT sequences from the child process are classified (allow/filter/block) before forwarding. The proxy never responds to terminal queries, never allows clipboard access, and never executes content from the child. See SECURITY.md for the full classification table.
+
+8. **No network, no telemetry, no surprises.** The proxy makes zero network connections. Default logging captures metadata only. Session persistence is opt-in and encrypted. Users can verify all claims independently.

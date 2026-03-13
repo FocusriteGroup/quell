@@ -1,17 +1,17 @@
 [package]
-name = "claude-terminal"
+name = "terminal-exploration"
 version = "0.1.0"
 edition = "2024"
-description = "Windows-native terminal proxy for Claude Code — eliminates scroll-jumping and flicker"
+description = "Windows-native terminal proxy for AI CLI tools — eliminates scroll-jumping and flicker"
 license = "MIT"
 repository = "https://github.com/FurbySoup/terminal-exploration"
 
 [lib]
-name = "claude_terminal"
+name = "terminal_exploration"
 path = "src/lib.rs"
 
 [[bin]]
-name = "claude-terminal"
+name = "terminal-exploration"
 path = "src/main.rs"
 
 [dependencies]

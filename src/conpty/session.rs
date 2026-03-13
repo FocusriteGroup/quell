@@ -95,6 +95,24 @@ impl ConPtySession {
         Ok(exit_code)
     }
 
+    /// Try to wait for the child with a timeout (ms). Returns Ok(None) on timeout.
+    pub fn try_wait_for_child(&self, timeout_ms: u32) -> Result<Option<u32>> {
+        debug!(pid = self.process_id, timeout_ms, "waiting for child process (with timeout)");
+        let signaled = sys::wait_for_single_object(self.process_handle, Some(timeout_ms))?;
+        if signaled {
+            let exit_code = sys::get_exit_code(self.process_handle)?;
+            info!(pid = self.process_id, exit_code, "child process exited");
+            Ok(Some(exit_code))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get the raw process handle value (as usize, safe to send across threads).
+    pub fn process_handle_raw(&self) -> usize {
+        self.process_handle.0 as usize
+    }
+
     /// Get the child process ID.
     pub fn process_id(&self) -> u32 {
         self.process_id

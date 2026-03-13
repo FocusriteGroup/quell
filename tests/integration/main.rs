@@ -175,7 +175,7 @@ mod proxy_pipeline_tests {
     /// We feed data through each component and verify the output chain.
     #[test]
     fn test_pipeline_passthrough_to_renderer() {
-        use claude_terminal::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
+        use terminal_exploration::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
 
         let mut detector = SyncBlockDetector::new();
         let mut renderer = DiffRenderer::new(24, 80);
@@ -201,7 +201,7 @@ mod proxy_pipeline_tests {
     /// Test that sync blocks flow through correctly.
     #[test]
     fn test_pipeline_sync_block_to_renderer() {
-        use claude_terminal::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
+        use terminal_exploration::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
 
         let mut detector = SyncBlockDetector::new();
         let mut renderer = DiffRenderer::new(24, 80);
@@ -234,8 +234,8 @@ mod proxy_pipeline_tests {
     /// Test that history receives data from the pipeline.
     #[test]
     fn test_pipeline_history_receives_data() {
-        use claude_terminal::history::LineBuffer;
-        use claude_terminal::vt::{SyncBlockDetector, SyncEvent};
+        use terminal_exploration::history::LineBuffer;
+        use terminal_exploration::vt::{SyncBlockDetector, SyncEvent};
 
         let mut detector = SyncBlockDetector::new();
         let mut history = LineBuffer::new(1000);
@@ -256,8 +256,8 @@ mod proxy_pipeline_tests {
     /// Test that the render coalescer timing logic works with the pipeline.
     #[test]
     fn test_coalescer_integrates_with_pipeline() {
-        use claude_terminal::proxy::render_coalescer::RenderCoalescer;
-        use claude_terminal::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
+        use terminal_exploration::proxy::render_coalescer::RenderCoalescer;
+        use terminal_exploration::vt::{DiffRenderer, SyncBlockDetector, SyncEvent};
 
         let mut detector = SyncBlockDetector::new();
         let mut renderer = DiffRenderer::new(24, 80);
@@ -299,9 +299,9 @@ mod proxy_pipeline_tests {
     /// and verify it runs without panicking or erroring.
     #[test]
     fn test_proxy_echo_roundtrip() {
-        use claude_terminal::config::AppConfig;
-        use claude_terminal::conpty::ConPtySession;
-        use claude_terminal::proxy::Proxy;
+        use terminal_exploration::config::AppConfig;
+        use terminal_exploration::conpty::ConPtySession;
+        use terminal_exploration::proxy::Proxy;
 
         let config = AppConfig::default();
         let session = ConPtySession::spawn("cmd.exe /c echo proxy-test", 80, 25)
@@ -322,9 +322,9 @@ mod proxy_pipeline_tests {
     /// Verify that the proxy captures non-zero exit codes.
     #[test]
     fn test_proxy_captures_exit_code() {
-        use claude_terminal::config::AppConfig;
-        use claude_terminal::conpty::ConPtySession;
-        use claude_terminal::proxy::Proxy;
+        use terminal_exploration::config::AppConfig;
+        use terminal_exploration::conpty::ConPtySession;
+        use terminal_exploration::proxy::Proxy;
 
         let config = AppConfig::default();
         let session = ConPtySession::spawn("cmd.exe /c exit 42", 80, 25)
@@ -342,9 +342,9 @@ mod proxy_pipeline_tests {
     /// Verify that large output (100+ lines) flows through without data loss.
     #[test]
     fn test_proxy_large_output() {
-        use claude_terminal::config::AppConfig;
-        use claude_terminal::conpty::ConPtySession;
-        use claude_terminal::proxy::Proxy;
+        use terminal_exploration::config::AppConfig;
+        use terminal_exploration::conpty::ConPtySession;
+        use terminal_exploration::proxy::Proxy;
 
         let config = AppConfig::default();
         let session = ConPtySession::spawn(

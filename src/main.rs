@@ -20,7 +20,7 @@ fn main() -> Result<()> {
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        "claude-terminal starting"
+        "terminal-exploration starting"
     );
 
     // Load configuration
@@ -46,13 +46,13 @@ fn main() -> Result<()> {
     // Run the proxy — returns the child's exit code
     let exit_code = run_proxy(&command_line, config)?;
 
-    info!(exit_code, "claude-terminal shutting down");
+    info!(exit_code, "terminal-exploration shutting down");
 
-    if exit_code != 0 {
-        std::process::exit(exit_code as i32);
-    }
-
-    Ok(())
+    // Force-exit the process. The input thread may still be blocked in
+    // ReadFile on the console handle (Windows doesn't support cancelling
+    // console reads reliably). Without this, the process hangs after
+    // main() returns because Rust's runtime waits for all threads.
+    std::process::exit(exit_code as i32);
 }
 
 fn run_proxy(command_line: &str, config: AppConfig) -> Result<u32> {
@@ -68,21 +68,28 @@ fn run_proxy(command_line: &str, config: AppConfig) -> Result<u32> {
     install_panic_hook();
 
     // Spawn child in ConPTY
-    let session = ConPtySession::spawn(command_line, cols, rows)
-        .context("failed to create ConPTY session")?;
+    let session = match ConPtySession::spawn(command_line, cols, rows) {
+        Ok(s) => s,
+        Err(e) => {
+            // Restore console mode before propagating spawn error
+            let _ = console_mode.restore();
+            std::mem::forget(console_mode);
+            return Err(e).context("failed to create ConPTY session");
+        }
+    };
 
     // Create and run the proxy
     let (proxy, _events) = Proxy::new(config, session);
-    let exit_code = proxy.run()?;
+    let result = proxy.run();
 
-    // Restore console mode (explicit restore before Drop for better error reporting)
+    // Always restore console mode, even if proxy.run() failed
     if let Err(e) = console_mode.restore() {
         warn!(error = %e, "failed to restore console mode");
     }
     // Prevent double-restore in Drop
     std::mem::forget(console_mode);
 
-    Ok(exit_code)
+    result
 }
 
 /// Install a panic hook that restores console mode before printing the panic.
@@ -102,13 +109,13 @@ fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocki
         .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
 
     if let Some(log_file) = &cli.log_file {
-        // File logging with structured output
+        // File logging with structured output — use the requested log level
         let log_dir = std::path::Path::new(log_file)
             .parent()
             .unwrap_or(std::path::Path::new("."));
         let log_filename = std::path::Path::new(log_file)
             .file_name()
-            .unwrap_or(std::ffi::OsStr::new("claude-terminal.log"));
+            .unwrap_or(std::ffi::OsStr::new("terminal-exploration.log"));
 
         let file_appender = tracing_appender::rolling::daily(log_dir, log_filename);
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
@@ -127,9 +134,20 @@ fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocki
 
         Ok(Some(guard))
     } else {
-        // Stderr logging for development
+        // Stderr logging — default to warn level to avoid spamming the
+        // user's terminal. Use RUST_LOG or --log-level to override.
+        let stderr_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| {
+                // Only override to "warn" if the user didn't explicitly set a level
+                if cli.log_level == "info" {
+                    EnvFilter::new("warn")
+                } else {
+                    EnvFilter::new(&cli.log_level)
+                }
+            });
+
         tracing_subscriber::registry()
-            .with(env_filter)
+            .with(stderr_filter)
             .with(
                 fmt::layer()
                     .with_writer(std::io::stderr)

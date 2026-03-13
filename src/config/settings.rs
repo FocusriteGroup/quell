@@ -101,7 +101,7 @@ impl AppConfig {
 fn default_config_path() -> String {
     dirs::config_dir()
         .map(|p| {
-            p.join("claude-terminal")
+            p.join("terminal-exploration")
                 .join("config.toml")
                 .to_string_lossy()
                 .to_string()
