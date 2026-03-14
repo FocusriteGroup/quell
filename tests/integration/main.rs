@@ -307,7 +307,7 @@ mod proxy_pipeline_tests {
         let session = ConPtySession::spawn("cmd.exe /c echo proxy-test", 80, 25)
             .expect("failed to spawn");
 
-        let (proxy, _events) = Proxy::new(config, session);
+        let (proxy, _events) = Proxy::new(config, quell::config::ToolKind::Unknown, session);
         let exit_code = proxy.run().expect("proxy run failed");
 
         // ConPTY may report 0 or a termination status (0xC000013A) when the child
@@ -330,7 +330,7 @@ mod proxy_pipeline_tests {
         let session = ConPtySession::spawn("cmd.exe /c exit 42", 80, 25)
             .expect("failed to spawn");
 
-        let (proxy, _events) = Proxy::new(config, session);
+        let (proxy, _events) = Proxy::new(config, quell::config::ToolKind::Unknown, session);
         let exit_code = proxy.run().expect("proxy run failed");
 
         assert!(
@@ -354,7 +354,7 @@ mod proxy_pipeline_tests {
         )
         .expect("failed to spawn");
 
-        let (proxy, _events) = Proxy::new(config, session);
+        let (proxy, _events) = Proxy::new(config, quell::config::ToolKind::Unknown, session);
         let exit_code = proxy.run().expect("proxy run failed");
 
         // Accept either clean exit or ConPTY termination artifact

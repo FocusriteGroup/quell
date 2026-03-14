@@ -5,7 +5,7 @@
 //
 // Layer 2 (termwiz parse-level) is in escape_filter.rs for history replay only.
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Byte-level output filter for the live output path.
 ///
@@ -21,6 +21,7 @@ pub struct OutputFilter {
     c1_bytes_stripped: u64,
     queries_stripped: u64,
     titles_sanitized: u64,
+    links_stripped: u64,
 }
 
 #[derive(Debug)]
@@ -50,6 +51,7 @@ impl OutputFilter {
             c1_bytes_stripped: 0,
             queries_stripped: 0,
             titles_sanitized: 0,
+            links_stripped: 0,
         }
     }
 
@@ -251,8 +253,12 @@ impl OutputFilter {
                 self.titles_sanitized += 1;
                 self.emit_sanitized_osc2(buf);
             }
+            Some(8) => {
+                // OSC 8 — hyperlink — check URL scheme whitelist
+                self.handle_osc8(buf);
+            }
             _ => {
-                // Other OSC sequences — pass through (e.g., OSC 8 hyperlinks)
+                // Other OSC sequences — pass through
                 self.output.push(0x1B);
                 self.output.push(b']');
                 self.output.extend_from_slice(buf);
@@ -293,6 +299,68 @@ impl OutputFilter {
         self.output.push(0x07); // BEL terminator
     }
 
+    /// Handle OSC 8 hyperlinks with URL scheme whitelist.
+    /// Format: "8;params;URI" (opening) or "8;;" (closing)
+    /// Allowed schemes: http, https, file. Others are stripped (link wrapper
+    /// removed, visible text preserved).
+    fn handle_osc8(&mut self, buf: &[u8]) {
+        // Find the two semicolons: "8;params;URI"
+        // First semicolon separates "8" from params
+        let after_type = match buf.iter().position(|&b| b == b';') {
+            Some(pos) => pos + 1,
+            None => {
+                // Malformed — pass through
+                self.emit_osc_passthrough(buf);
+                return;
+            }
+        };
+
+        // Second semicolon separates params from URI
+        let uri_start = match buf[after_type..].iter().position(|&b| b == b';') {
+            Some(pos) => after_type + pos + 1,
+            None => {
+                // Malformed — pass through
+                self.emit_osc_passthrough(buf);
+                return;
+            }
+        };
+
+        let uri = &buf[uri_start..];
+
+        // Empty URI = closing tag — always pass through
+        if uri.is_empty() {
+            self.emit_osc_passthrough(buf);
+            return;
+        }
+
+        // Check the URI scheme against the whitelist
+        if self.is_allowed_scheme(uri) {
+            self.emit_osc_passthrough(buf);
+        } else {
+            // Strip the OSC 8 wrapper — the visible text between opening and
+            // closing tags will still appear, just without the hyperlink
+            self.links_stripped += 1;
+            let scheme_end = uri.iter().position(|&b| b == b':').unwrap_or(0);
+            let scheme = std::str::from_utf8(&uri[..scheme_end]).unwrap_or("unknown");
+            warn!(scheme, "stripped OSC 8 hyperlink with disallowed scheme");
+        }
+    }
+
+    /// Check if a URI has an allowed scheme.
+    fn is_allowed_scheme(&self, uri: &[u8]) -> bool {
+        let uri_lower: Vec<u8> = uri.iter().map(|b| b.to_ascii_lowercase()).collect();
+        uri_lower.starts_with(b"http://")
+            || uri_lower.starts_with(b"https://")
+            || uri_lower.starts_with(b"file://")
+    }
+
+    fn emit_osc_passthrough(&mut self, buf: &[u8]) {
+        self.output.push(0x1B);
+        self.output.push(b']');
+        self.output.extend_from_slice(buf);
+        self.output.push(0x07);
+    }
+
     pub fn metrics(&self) -> OutputFilterMetrics {
         OutputFilterMetrics {
             osc52_stripped: self.osc52_stripped,
@@ -300,6 +368,7 @@ impl OutputFilter {
             c1_bytes_stripped: self.c1_bytes_stripped,
             queries_stripped: self.queries_stripped,
             titles_sanitized: self.titles_sanitized,
+            links_stripped: self.links_stripped,
         }
     }
 }
@@ -311,6 +380,7 @@ pub struct OutputFilterMetrics {
     pub c1_bytes_stripped: u64,
     pub queries_stripped: u64,
     pub titles_sanitized: u64,
+    pub links_stripped: u64,
 }
 
 #[cfg(test)]
@@ -451,9 +521,83 @@ mod tests {
     }
 
     #[test]
-    fn test_osc8_hyperlink_passes_through() {
+    fn test_osc8_https_passes_through() {
         let mut f = OutputFilter::new();
         let input = b"\x1b]8;;https://example.com\x07link\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, input.to_vec());
+        assert_eq!(f.metrics().links_stripped, 0);
+    }
+
+    #[test]
+    fn test_osc8_http_passes_through() {
+        let mut f = OutputFilter::new();
+        let input = b"\x1b]8;;http://example.com\x07link\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, input.to_vec());
+    }
+
+    #[test]
+    fn test_osc8_file_passes_through() {
+        let mut f = OutputFilter::new();
+        let input = b"\x1b]8;;file:///tmp/foo.rs\x07foo.rs\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, input.to_vec());
+    }
+
+    #[test]
+    fn test_osc8_ssh_stripped() {
+        let mut f = OutputFilter::new();
+        // SSH scheme — blocked (CVE-2023-46322)
+        let input = b"\x1b]8;;ssh://evil.com\x07click here\x1b]8;;\x07";
+        let result = f.filter(input);
+        // Opening link stripped, visible text preserved, closing link passed through
+        assert_eq!(result, b"click here\x1b]8;;\x07");
+        assert_eq!(f.metrics().links_stripped, 1);
+    }
+
+    #[test]
+    fn test_osc8_javascript_stripped() {
+        let mut f = OutputFilter::new();
+        let input = b"\x1b]8;;javascript:alert(1)\x07click\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, b"click\x1b]8;;\x07");
+        assert_eq!(f.metrics().links_stripped, 1);
+    }
+
+    #[test]
+    fn test_osc8_x_man_page_stripped() {
+        let mut f = OutputFilter::new();
+        // x-man-page scheme — blocked (CVE-2023-46321)
+        let input = b"\x1b]8;;x-man-page://1/ls\x07ls(1)\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, b"ls(1)\x1b]8;;\x07");
+        assert_eq!(f.metrics().links_stripped, 1);
+    }
+
+    #[test]
+    fn test_osc8_closing_tag_always_passes() {
+        let mut f = OutputFilter::new();
+        // Closing tag (empty URI) must always pass through
+        let input = b"\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, input.to_vec());
+        assert_eq!(f.metrics().links_stripped, 0);
+    }
+
+    #[test]
+    fn test_osc8_with_params_passes() {
+        let mut f = OutputFilter::new();
+        // OSC 8 with id parameter
+        let input = b"\x1b]8;id=link1;https://example.com\x07text\x1b]8;;\x07";
+        let result = f.filter(input);
+        assert_eq!(result, input.to_vec());
+    }
+
+    #[test]
+    fn test_osc8_case_insensitive_scheme() {
+        let mut f = OutputFilter::new();
+        let input = b"\x1b]8;;HTTPS://example.com\x07link\x1b]8;;\x07";
         let result = f.filter(input);
         assert_eq!(result, input.to_vec());
     }

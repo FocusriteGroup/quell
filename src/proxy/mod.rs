@@ -27,6 +27,7 @@
 //   5. Input thread is signaled via shutdown event
 
 pub mod events;
+pub mod key_translator;
 pub mod render_coalescer;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,12 +38,13 @@ use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ToolKind};
 use crate::conpty::ConPtySession;
 use crate::history::{HistoryEventType, LineBuffer, OutputFilter};
 use crate::vt::{SyncBlockDetector, SyncEvent};
 
 use events::{event_channel, ProxyEvent};
+use key_translator::{KeyTranslator, KITTY_DISABLE, KITTY_ENABLE};
 
 /// Reason a thread is signaling shutdown
 #[derive(Debug, Clone)]
@@ -56,6 +58,7 @@ enum ShutdownReason {
 /// The proxy coordinator. Owns all processing state and runs the main loop.
 pub struct Proxy {
     config: AppConfig,
+    tool: ToolKind,
     session: ConPtySession,
     event_tx: Sender<ProxyEvent>,
 }
@@ -63,13 +66,14 @@ pub struct Proxy {
 impl Proxy {
     /// Create a new proxy. Returns (proxy, event_receiver).
     /// In Phase 1, the caller can drop the receiver immediately.
-    pub fn new(config: AppConfig, session: ConPtySession) -> (Self, Receiver<ProxyEvent>) {
+    pub fn new(config: AppConfig, tool: ToolKind, session: ConPtySession) -> (Self, Receiver<ProxyEvent>) {
         let (event_tx, event_rx) = event_channel();
         let (cols, rows) = session.size();
-        info!(cols, rows, "proxy created");
+        info!(cols, rows, tool = %tool, "proxy created");
         (
             Self {
                 config,
+                tool,
                 session,
                 event_tx,
             },
@@ -186,6 +190,7 @@ impl Proxy {
         let stdin_is_console = is_stdin_console();
         debug!(stdin_is_console, "input thread mode selected");
 
+        let tool = self.tool;
         let input_thread = thread::Builder::new()
             .name("conpty-input".into())
             .spawn(move || {
@@ -196,6 +201,7 @@ impl Proxy {
                         input_shutdown_tx,
                         shutdown_event_handle,
                         resize_tx,
+                        tool,
                     );
                 } else {
                     run_pipe_input_loop(input_write, input_flag, input_shutdown_tx);
@@ -206,6 +212,14 @@ impl Proxy {
 
         let stdout_handle = raw_stdout_handle();
         let mut last_size = (cols, rows);
+
+        // Enable Kitty keyboard protocol on the outer terminal.
+        // Terminals that don't support it will ignore the sequence.
+        if let Err(e) = raw_write_all(stdout_handle, KITTY_ENABLE) {
+            warn!(error = %e, "failed to send Kitty protocol enable");
+        } else {
+            info!("Kitty keyboard protocol enable sent");
+        }
 
         info!("entering main proxy loop (passthrough mode)");
 
@@ -293,7 +307,12 @@ impl Proxy {
             }
         }
 
-        // stdout_handle is just a raw handle value, no cleanup needed
+        // Disable Kitty keyboard protocol before restoring terminal state
+        if let Err(e) = raw_write_all(stdout_handle, KITTY_DISABLE) {
+            warn!(error = %e, "failed to send Kitty protocol disable");
+        } else {
+            info!("Kitty keyboard protocol disabled");
+        }
 
         // Signal all threads to stop
         info!("shutting down I/O threads");
@@ -405,6 +424,7 @@ fn run_console_input_loop(
     shutdown_tx: Sender<ShutdownReason>,
     shutdown_event_handle: usize,
     resize_tx: Sender<(i16, i16)>,
+    tool: ToolKind,
 ) {
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
     use windows::Win32::System::Console::{
@@ -417,6 +437,7 @@ fn run_console_input_loop(
     let event_handle = HANDLE(shutdown_event_handle as *mut _);
     let handles = [stdin_handle, event_handle];
     let mut records = vec![INPUT_RECORD::default(); 128];
+    let mut translator = KeyTranslator::new(tool);
 
     loop {
         if flag.load(Ordering::Relaxed) {
@@ -475,10 +496,11 @@ fn run_console_input_loop(
                 }
             }
 
-            // Write accumulated keyboard input to ConPTY
+            // Translate Kitty sequences and write to ConPTY
             if !input_bytes.is_empty() {
-                debug!(bytes = input_bytes.len(), "stdin read");
-                if let Err(e) = input_write.write_all(&input_bytes) {
+                let translated = translator.translate(&input_bytes);
+                debug!(raw_bytes = input_bytes.len(), translated_bytes = translated.len(), "stdin read");
+                if let Err(e) = input_write.write_all(&translated) {
                     if !flag.load(Ordering::Relaxed) {
                         warn!(error = %e, "input pipe write error");
                         let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));

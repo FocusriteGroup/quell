@@ -44,13 +44,16 @@ fn main() -> Result<()> {
         format!("{} {}", child_command, child_args.join(" "))
     };
 
+    // Detect AI tool: CLI flag overrides auto-detection from command
+    let tool = cli.tool.unwrap_or_else(|| config::ToolKind::detect(&command_line));
     info!(
         command = %command_line,
+        tool = %tool,
         "launching child process"
     );
 
     // Run the proxy — returns the child's exit code
-    let exit_code = run_proxy(&command_line, config)?;
+    let exit_code = run_proxy(&command_line, config, tool)?;
 
     info!(exit_code, "quell shutting down");
 
@@ -61,7 +64,7 @@ fn main() -> Result<()> {
     std::process::exit(exit_code as i32);
 }
 
-fn run_proxy(command_line: &str, config: AppConfig) -> Result<u32> {
+fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind) -> Result<u32> {
     // Detect terminal size
     let (cols, rows) = conpty::get_terminal_size().unwrap_or((120, 30));
     info!(cols, rows, "detected terminal size");
@@ -85,7 +88,7 @@ fn run_proxy(command_line: &str, config: AppConfig) -> Result<u32> {
     };
 
     // Create and run the proxy
-    let (proxy, _events) = Proxy::new(config, session);
+    let (proxy, _events) = Proxy::new(config, tool, session);
     let result = proxy.run();
 
     // Always restore console mode, even if proxy.run() failed

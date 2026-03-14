@@ -1,6 +1,8 @@
 mod settings;
+mod tool;
 
 pub use settings::AppConfig;
+pub use tool::ToolKind;
 
 use clap::Parser;
 
@@ -42,4 +44,8 @@ pub struct Cli {
     /// Maximum history lines to retain
     #[arg(long, default_value = "100000")]
     pub history_lines: usize,
+
+    /// AI tool override (auto-detected from command if not set)
+    #[arg(long, value_parser = tool::parse_tool_kind)]
+    pub tool: Option<ToolKind>,
 }

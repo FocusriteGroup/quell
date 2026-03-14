@@ -59,27 +59,27 @@
 - [x] Zero-copy hot-path: `OutputFilter.filter()` returns `&[u8]` reference, no allocation per chunk
 
 ### Milestone 1.5: Live Proving
-- [ ] Test with Claude Code streaming responses (primary)
-- [ ] Smoke test with Copilot CLI and Gemini CLI (verify no breakage)
-- [ ] Measure scroll event reduction vs. raw terminal
-- [ ] Measure compression ratio (bytes in vs. bytes out)
-- [ ] Test with Windows Terminal, VS Code terminal, conhost
+- [x] Test with Claude Code streaming responses (primary) — LP4 confirmed scroll stability
+- [x] Test with VS Code terminal — LP4 (2026-03-14), UTF-8 fixes verified
+- [x] Test with Windows Terminal — confirmed working (2026-03-14)
 - [ ] Long session stability (hours of use)
+- [ ] Resize during streaming — drag terminal edge mid-response
+- [ ] Ctrl+C mid-stream — interrupt long response, verify clean state
 - [ ] Test OSC 8 passthrough behavior through ConPTY (determines 1.6 feasibility)
+- [ ] Smoke test with Copilot CLI and Gemini CLI (verify no breakage)
 - [ ] Fuzz VT processing pipeline with `cargo-fuzz` (crafted escape sequences, extreme parameters)
 - [ ] Verify panic recovery: malformed sequences crash emulator state, not the proxy process
 
-### Milestone 1.6: Keyboard & Link Security
-- [ ] Lightweight tool detection from child process command string + `--tool` CLI flag
-- [ ] Kitty protocol negotiation with outer terminal (probe support, active enable/restore)
-- [ ] Shift+Enter translation: receive Kitty-encoded `CSI 13;2 u`, translate per tool profile
+### Milestone 1.6: Keyboard & Link Security ✓
+- [x] Lightweight tool detection from child command string + `--tool` CLI flag (`ToolKind` enum, auto-detect from exe name)
+- [x] Kitty protocol enable/disable on outer terminal (unconditional — terminals that don't support it ignore the sequence)
+- [x] Shift+Enter translation: Kitty `CSI 13;2 u` → tool-specific newline, with chunk boundary handling
   - Claude Code: `ESC + CR` (0x1b 0x0d)
   - Gemini CLI: `Ctrl+J` (0x0a)
   - Copilot CLI: literal newline
   - Fallback: Alt+Enter still works without Kitty protocol
-- [ ] OSC 8 URL scheme whitelist: allow `http`, `https`, `file` — strip/neutralize others
-- [ ] `warn!` log for blocked URL schemes in child output
-- [ ] All standard shortcuts pass through unmodified (Ctrl+C, Ctrl+D, Ctrl+L, Ctrl+R, etc.)
+- [x] OSC 8 URL scheme whitelist: `http`, `https`, `file` pass through; all others stripped with `warn!` log
+- [x] All standard shortcuts verified to pass through unmodified (Ctrl+C/D/L/R/A/E/W/U/Z, Tab, Escape, Enter, arrows)
 
 ### Milestone 1.7: Release Readiness
 - [ ] `cargo-audit` in CI (check against RustSec Advisory Database)

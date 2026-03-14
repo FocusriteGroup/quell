@@ -45,7 +45,7 @@ Core modules:
 ```bash
 cargo build                    # Debug build
 cargo build --release          # Release build
-cargo run -- claude            # Run with Claude Code as child process
+cargo run -- claude -- --dangerously-skip-permissions  # Run with Claude Code as child process
 cargo test                     # Run all tests
 cargo test --test unit         # Unit tests only
 cargo test --test integration  # Integration tests only
