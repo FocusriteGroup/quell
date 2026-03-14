@@ -81,16 +81,17 @@
 - [x] OSC 8 URL scheme whitelist: `http`, `https`, `file` pass through; all others stripped with `warn!` log
 - [x] All standard shortcuts verified to pass through unmodified (Ctrl+C/D/L/R/A/E/W/U/Z, Tab, Escape, Enter, arrows)
 
-### Milestone 1.7: Release Readiness
-- [ ] `cargo-audit` in CI (check against RustSec Advisory Database)
-- [ ] `cargo-deny` in CI (license checking, crate banning, advisory flags)
-- [ ] SHA256 checksums published alongside release binaries
-- [ ] Enable GitHub Private Vulnerability Reporting on the repository
-- [ ] SECURITY.md finalized with vulnerability reporting instructions
-- [ ] Remove project-local config search path (only `--config` flag and `%APPDATA%`) or add warning on project-local config load
+### Milestone 1.7: Release Readiness ✓
+- [x] `cargo-audit` — zero vulnerabilities found (260 crate dependencies scanned)
+- [x] `cargo-deny` — all checks pass (advisories, bans, licenses, sources)
+- [x] GitHub Actions CI: build, test, clippy, cargo-audit, cargo-deny on push/PR
+- [x] GitHub Actions release workflow: build, test, SHA256 checksum, GitHub Release on tag push
+- [x] SECURITY.md finalized with correct repo URLs and vulnerability reporting instructions
+- [x] Config search is already safe: only `--config` flag and `%APPDATA%` (no project-local search)
+- [x] LICENSE file (MIT)
+- [ ] Enable GitHub Private Vulnerability Reporting on the repository (manual)
 - [ ] Distribution: portable .exe + scoop manifest
 - [ ] Distribution: winget manifest (if scoop adoption is good)
-- [ ] LICENSE file (MIT)
 
 ### Milestone 1.8: Rename to "quell" ✓
 
@@ -178,6 +179,7 @@ level = "info"
 - [ ] Raw mode toggle: full unstructured terminal passthrough for power users
 - [ ] Status bar (bottom, toggleable): tool name, project dir, context %, elapsed time
 - [ ] Stall detection: "Still working..." after 10s silence during active operation (configurable)
+- [ ] Soft word-wrap for code/diff blocks (terminals only do character-level wrapping at column boundary)
 
 ### Milestone 2.3: Tabs & Sessions
 - [ ] Tab support: each tab = one AI session (or shell)

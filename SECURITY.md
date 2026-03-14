@@ -31,7 +31,7 @@ AI-generated output is untrusted content. The proxy classifies VT escape sequenc
 **Blocked sequences** (never forwarded to your terminal):
 - OSC 52 (clipboard read/write) — prevents child process from accessing your clipboard
 - OSC 50 (font query) — prevents font name echo attacks
-- C1 control bytes (0x80-0x9F) — prevents ambiguous interpretation attacks
+- C1 control characters (U+0080-U+009F, UTF-8 encoded) — prevents ambiguous interpretation attacks
 
 **Filtered sequences** (forwarded with sanitization):
 - OSC 8 hyperlinks — URL scheme whitelist (`http`, `https`, `file` only). Schemes used in real CVEs (`ssh://`, `x-man-page://`) are stripped.
