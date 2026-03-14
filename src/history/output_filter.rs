@@ -34,6 +34,9 @@ enum FilterState {
     InOsc { buf: Vec<u8> },
     /// Inside DCS sequence (ESC P), accumulating until ST
     InDcs,
+    /// Saw 0xC2 at chunk boundary — waiting for next byte to determine
+    /// if this is a C1 control (0xC2 0x80-0x9F) or a valid character
+    PendingC2,
 }
 
 impl OutputFilter {
@@ -64,9 +67,15 @@ impl OutputFilter {
                     if b == 0x1B {
                         self.state = FilterState::EscapeSeen;
                         i += 1;
-                    } else if (0x80..=0x9F).contains(&b) {
-                        // C1 control byte — strip it
+                    } else if b == 0xC2 && i + 1 < data.len() && (0x80..=0x9F).contains(&data[i + 1]) {
+                        // C1 control character in UTF-8 encoding (U+0080..U+009F)
+                        // Two bytes: 0xC2 followed by 0x80-0x9F
                         self.c1_bytes_stripped += 1;
+                        i += 2;
+                    } else if b == 0xC2 && i + 1 >= data.len() {
+                        // 0xC2 at chunk boundary — could be start of C1 or a valid
+                        // two-byte character. Buffer it and decide on next chunk.
+                        self.state = FilterState::PendingC2;
                         i += 1;
                     } else {
                         self.output.push(b);
@@ -175,6 +184,20 @@ impl OutputFilter {
                         }
                         // else: ESC at chunk boundary or inside DCS — keep scanning
                     }
+                }
+                FilterState::PendingC2 => {
+                    let b = data[i];
+                    if (0x80..=0x9F).contains(&b) {
+                        // C1 control character (U+0080..U+009F) — strip both bytes
+                        self.c1_bytes_stripped += 1;
+                        i += 1;
+                    } else {
+                        // Valid UTF-8 two-byte character starting with 0xC2 — emit both
+                        self.output.push(0xC2);
+                        self.output.push(b);
+                        i += 1;
+                    }
+                    self.state = FilterState::Normal;
                 }
             }
         }
@@ -319,8 +342,9 @@ mod tests {
     #[test]
     fn test_c1_bytes_stripped() {
         let mut f = OutputFilter::new();
-        // 0x90 = DCS, 0x9B = CSI, 0x9C = ST as C1 bytes
-        let result = f.filter(b"hello\x90world\x9Bfoo\x9C");
+        // C1 controls in UTF-8 encoding: 0xC2 followed by 0x80-0x9F
+        // U+0090 (DCS) = C2 90, U+009B (CSI) = C2 9B, U+009C (ST) = C2 9C
+        let result = f.filter(b"hello\xC2\x90world\xC2\x9Bfoo\xC2\x9C");
         assert_eq!(result, b"helloworldfoo");
         assert_eq!(f.metrics().c1_bytes_stripped, 3);
     }
@@ -502,12 +526,55 @@ mod tests {
     #[test]
     fn test_all_c1_range_stripped() {
         let mut f = OutputFilter::new();
+        // All C1 controls in UTF-8 encoding: 0xC2 0x80 through 0xC2 0x9F
         let mut input = Vec::new();
         for b in 0x80u8..=0x9F {
+            input.push(0xC2);
             input.push(b);
         }
         let result = f.filter(&input);
         assert!(result.is_empty());
         assert_eq!(f.metrics().c1_bytes_stripped, 32);
+    }
+
+    #[test]
+    fn test_utf8_continuation_bytes_preserved() {
+        let mut f = OutputFilter::new();
+        // U+276F (❯) = E2 9D AF — 0x9D is a continuation byte, not a C1 control
+        let input = "before❯after".as_bytes();
+        let result = f.filter(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_utf8_box_drawing_preserved() {
+        let mut f = OutputFilter::new();
+        // Box-drawing characters with continuation bytes in 0x80-0x9F range
+        // U+2500 (─) = E2 94 80, U+2502 (│) = E2 94 82
+        let input = "┌──┐│hi│└──┘".as_bytes();
+        let result = f.filter(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_c1_at_chunk_boundary() {
+        let mut f = OutputFilter::new();
+        // C1 control split across chunks: 0xC2 at end of chunk 1, 0x90 at start of chunk 2
+        let result1 = f.filter(b"text\xC2").to_vec();
+        let result2 = f.filter(b"\x90more");
+        assert_eq!(result1, b"text");
+        assert_eq!(result2, b"more");
+        assert_eq!(f.metrics().c1_bytes_stripped, 1);
+    }
+
+    #[test]
+    fn test_c2_non_c1_at_chunk_boundary() {
+        let mut f = OutputFilter::new();
+        // Valid UTF-8 char starting with 0xC2 split across chunks
+        // U+00A9 (©) = C2 A9 — NOT a C1 control
+        let result1 = f.filter(b"text\xC2").to_vec();
+        let result2 = f.filter(b"\xA9more");
+        assert_eq!(result1, b"text");
+        assert_eq!(result2, b"\xC2\xA9more");
     }
 }

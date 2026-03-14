@@ -29,7 +29,6 @@
 pub mod events;
 pub mod render_coalescer;
 
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -205,7 +204,7 @@ impl Proxy {
             .context("failed to spawn input thread")?;
         info!("input thread started");
 
-        let mut stdout = std::io::stdout().lock();
+        let stdout_handle = raw_stdout_handle();
         let mut last_size = (cols, rows);
 
         info!("entering main proxy loop (passthrough mode)");
@@ -218,13 +217,10 @@ impl Proxy {
                             // Filter dangerous sequences before output
                             let filtered = output_filter.filter(&data);
 
-                            // Write filtered data to stdout
-                            if let Err(e) = stdout.write_all(&filtered) {
+                            // Write filtered data to stdout via raw WriteFile
+                            // (Rust's console stdout rejects non-UTF-8 bytes)
+                            if let Err(e) = raw_write_all(stdout_handle, &filtered) {
                                 error!(error = %e, "failed to write to stdout");
-                                break;
-                            }
-                            if let Err(e) = stdout.flush() {
-                                error!(error = %e, "failed to flush stdout");
                                 break;
                             }
 
@@ -297,8 +293,7 @@ impl Proxy {
             }
         }
 
-        // Release stdout lock before shutdown (we're done writing)
-        drop(stdout);
+        // stdout_handle is just a raw handle value, no cleanup needed
 
         // Signal all threads to stop
         info!("shutting down I/O threads");
@@ -547,4 +542,26 @@ fn run_pipe_input_loop(
             }
         }
     }
+}
+
+/// Get the raw stdout handle for direct WriteFile access.
+/// We bypass Rust's `std::io::stdout()` because it uses `WriteConsoleW` in console mode,
+/// which rejects non-UTF-8 byte sequences (e.g., emoji split across ConPTY chunks).
+fn raw_stdout_handle() -> windows::Win32::Foundation::HANDLE {
+    use windows::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+    unsafe { GetStdHandle(STD_OUTPUT_HANDLE).expect("failed to get stdout handle") }
+}
+
+/// Write all bytes to a raw handle using WriteFile.
+fn raw_write_all(handle: windows::Win32::Foundation::HANDLE, mut data: &[u8]) -> anyhow::Result<()> {
+    use windows::Win32::Storage::FileSystem::WriteFile;
+    while !data.is_empty() {
+        let mut written = 0u32;
+        unsafe {
+            WriteFile(handle, Some(data), Some(&mut written), None)
+                .map_err(|e| anyhow::anyhow!("WriteFile failed: {e}"))?;
+        }
+        data = &data[written as usize..];
+    }
+    Ok(())
 }

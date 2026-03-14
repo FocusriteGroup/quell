@@ -1,7 +1,7 @@
 # Terminal User Research & Personas
 
 **Date:** 2026-03-13
-**Purpose:** Understand who uses (and avoids) terminal-based AI tools, what they need, and how terminal-exploration serves each group.
+**Purpose:** Understand who uses (and avoids) terminal-based AI tools, what they need, and how quell serves each group.
 **Scope:** All major AI CLI tools — Claude Code (primary), GitHub Copilot CLI, Google Gemini CLI. The proxy architecture is tool-agnostic; these personas apply across all three.
 
 ---
@@ -20,7 +20,7 @@ The terminal is experiencing a renaissance driven by two forces: GPU-accelerated
 - GitHub Copilot CLI has identical scroll-jumping and stuttering during streaming
 - Root cause: AI tools stream rapid partial updates faster than terminal rendering can handle
 - Anthropic recommends Ghostty with DEC mode 2026 — but that's Unix-only
-- **This is the exact problem terminal-exploration solves, and it's not niche — it's the #1 complaint across all AI CLI tools**
+- **This is the exact problem quell solves, and it's not niche — it's the #1 complaint across all AI CLI tools**
 
 #### 2. Output Readability Under Streaming Load
 - Long AI responses scroll past faster than users can read
@@ -86,7 +86,7 @@ The terminal is experiencing a renaissance driven by two forces: GPU-accelerated
 - Frustrated that "the AI is fast but the terminal can't keep up"
 - Has to learn different workarounds for each tool's rendering quirks
 
-**What they need from terminal-exploration:**
+**What they need from quell:**
 - Rock-solid differential rendering that eliminates flicker
 - Performance matching or beating their current emulator
 - Scrollback history that survives Claude Code sessions
@@ -115,7 +115,7 @@ The terminal is experiencing a renaissance driven by two forces: GPU-accelerated
 - Output feels like a wall of text — hard to parse where the AI's response starts and ends
 - Switching between Claude Code, Copilot, and Gemini means re-learning quirks for each
 
-**What they need from terminal-exploration:**
+**What they need from quell:**
 - Stable, readable output without scroll-jumping
 - Clear visual separation between user input and AI output
 - Easy text selection that respects code block boundaries
@@ -145,7 +145,7 @@ The terminal is experiencing a renaissance driven by two forces: GPU-accelerated
 - The terminal feels designed for people who already know how to use it
 - Procrastinated switching for weeks/months because it seemed "too daunting and in depth"
 
-**What they need from terminal-exploration:**
+**What they need from quell:**
 - An entry point that doesn't require terminal knowledge — double-clickable executable
 - Visual affordances: clear prompts, status indicators, obvious "where to type"
 - Helpful error messages explaining what went wrong and what to do next
@@ -175,7 +175,7 @@ The terminal is experiencing a renaissance driven by two forces: GPU-accelerated
 - Wants to run Claude in the background and come back when it's done (fire-and-forget)
 - Managing multiple projects means multiple terminal windows with no organization
 
-**What they need from terminal-exploration:**
+**What they need from quell:**
 - Session history they can search — "find that React component Claude wrote earlier"
 - Clear progress indication during long operations
 - Ability to collapse/expand Claude's tool call details (show results, not the journey)
@@ -205,7 +205,7 @@ The terminal is experiencing a renaissance driven by two forces: GPU-accelerated
 - Color-coded output (red errors, green success) is invisible without alternatives
 - Most terminal tools treat accessibility as an afterthought — if they consider it at all
 
-**What they need from terminal-exploration:**
+**What they need from quell:**
 - Screen reader mode that buffers output and announces complete responses
 - Text-only mode stripping decorative elements
 - Semantic structure — "Claude response begins" / "code block" / "response ends"

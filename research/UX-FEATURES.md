@@ -1,7 +1,7 @@
 # UX Feature Research
 
 **Date:** 2026-03-13
-**Scope:** Research for terminal-exploration features across all AI CLI tools (Claude Code, Copilot CLI, Gemini CLI)
+**Scope:** Research for quell features across all AI CLI tools (Claude Code, Copilot CLI, Gemini CLI)
 
 ---
 
@@ -17,7 +17,7 @@
 
 **Zellij** — Sessions > Tabs > Panes. KDL layout files for both manual workspace definition AND session resurrection (same format — elegant). Auto-saves every 1 second. WASM plugin system.
 
-### What This Means for terminal-exploration
+### What This Means for quell
 
 Phase 2 should support:
 - **Tabs** for multiple AI sessions (Claude Code, Copilot, Gemini — each in its own tab)
@@ -43,7 +43,7 @@ Phase 1 (proxy) is single-session by design. Multi-window is a Phase 2 concern.
 ### Cross-Tool Session Handoff
 - **`cli-continues`** (open source) grabs sessions from one AI tool and hands off to another, bringing conversation history, file changes, and working state. Supports 14 CLI tools.
 
-### What This Means for terminal-exploration
+### What This Means for quell
 
 Session forking at the terminal level is different from Claude Code's `/fork`:
 - **Claude's fork** branches the AI conversation context
@@ -74,13 +74,13 @@ The hard problem: scrollback context. A forked tab should probably NOT carry scr
 - Auto-name from the AI tool being run ("Claude Code", "Copilot", "Gemini") with manual override
 - Show the AI tool's current state in the tab title (idle, thinking, writing code, etc.)
 
-### Recommendation for terminal-exploration
+### Recommendation for quell
 
 Auto-naming strategy:
 ```
 [Tool Icon/Color] [Tool Name] — [Project Directory] [Status]
-  🟠 Claude Code — terminal-exploration (thinking...)
-  🟢 Copilot CLI — terminal-exploration (idle)
+  🟠 Claude Code — quell (thinking...)
+  🟢 Copilot CLI — quell (idle)
   🔵 Gemini CLI — api-project (writing code)
 ```
 - Tool detected from the child process command
@@ -121,7 +121,7 @@ Auto-naming strategy:
 - **xterm.js** (our Phase 2 frontend) has a built-in `AccessibilityManager` that creates an off-screen DOM tree mirroring terminal content. Supports NVDA, JAWS, ChromeVox via `aria-posinset`/`aria-setsize` and an assertive live region.
 - xterm.js screen reader mode queues keystrokes and matches them against output to avoid double-announcing typed characters
 
-### Recommendation for terminal-exploration
+### Recommendation for quell
 
 **Phase 1 (proxy):** Delegates to host terminal. Correctly forward resize events when user zooms.
 
@@ -155,7 +155,7 @@ Auto-naming strategy:
 | Bounded progress bar | Known-length operations (file download, batch processing) | `[████████░░] 80% 4/5 files (ETA 3s)` |
 | Spinner + elapsed | Unknown-length operations (AI thinking, tool execution) | `⠹ Thinking... (12s)` |
 | Streaming counter | Active streaming output (AI response generation) | `⠹ Writing... 2,847 tokens (8s)` |
-| Status line | Persistent state info | `Claude Code · terminal-exploration · 45% context` |
+| Status line | Persistent state info | `Claude Code · quell · 45% context` |
 
 ### Timing Guidelines
 - Spinner frame rate: **80-130ms** per frame (below 50ms = jittery, above 300ms = sluggish)
@@ -163,7 +163,7 @@ Auto-naming strategy:
 - For streaming AI responses: show **token/byte counter** alongside spinner
 - Use `indicatif` crate (Rust) for thread-safe progress bars with templates
 
-### Recommendation for terminal-exploration
+### Recommendation for quell
 
 **Phase 1 (proxy):** The proxy passes through whatever progress indicators the AI tool renders. No additional progress UI in proxy mode.
 
@@ -196,7 +196,7 @@ Claude Code's `/compact` summarizes conversation history into a condensed form. 
 1. **Active conversation turns** — the messages currently in context
 2. **Full session history** — the raw JSONL log, including pre-compaction messages
 
-### Recommendation for terminal-exploration
+### Recommendation for quell
 
 **Phase 2 concept: Conversation Turn Navigation**
 
@@ -304,7 +304,7 @@ Kitty protocol solves the 48-year limitation by encoding modifier keys explicitl
 | Tab | Autocomplete | AI tools use this |
 | Escape | Cancel/abort | Claude Code: single=cancel, double=rewind menu. Conflicts with vim. |
 
-### Recommendation for terminal-exploration
+### Recommendation for quell
 
 **Phase 1 (proxy) — Key translation layer:**
 
@@ -319,7 +319,7 @@ The proxy is uniquely positioned to solve the Shift+Enter problem for ALL AI CLI
    - For Copilot CLI: inject a literal newline character
 5. **Fallback:** If outer terminal doesn't support Kitty protocol, Alt+Enter still works
 
-This means Shift+Enter would "just work" in terminal-exploration regardless of which AI tool is running, without requiring `/terminal-setup` or any user configuration.
+This means Shift+Enter would "just work" in quell regardless of which AI tool is running, without requiring `/terminal-setup` or any user configuration.
 
 **Phase 2 (Tauri) — Full control:**
 
@@ -397,7 +397,7 @@ AI-generated output is **untrusted content** that may contain crafted escape seq
 
 **12 CVEs found in terminal emulators in 2022-2023** (dgl.cx research). Developers are high-value targets.
 
-### Recommendation for terminal-exploration
+### Recommendation for quell
 
 **Phase 1 (proxy) — Security-first passthrough:**
 

@@ -1,4 +1,4 @@
-# terminal-exploration — Roadmap
+# quell — Roadmap
 
 > **Key decisions (2026-03-13):**
 > - Proxy (Phase 1) and Tauri app (Phase 2) are **two separate products** — the proxy is permanent, not a stepping stone
@@ -92,46 +92,44 @@
 - [ ] Distribution: winget manifest (if scoop adoption is good)
 - [ ] LICENSE file (MIT)
 
-### Milestone 1.8: Rename to "quell"
+### Milestone 1.8: Rename to "quell" ✓
 
-Rename from `terminal-exploration` to `quell` across all code and docs. Do this before public release so users never see the old name.
+Renamed from `terminal-exploration` to `quell` across all code and docs.
 
 **Cargo.toml:**
-- [ ] `name = "quell"`
-- [ ] `[[bin]] name = "quell"`
-- [ ] `[[lib]] name = "quell"` (if added)
-- [ ] `repository = "https://github.com/FurbySoup/quell"` (after GitHub rename)
-- [ ] `description` updated to reference "quell"
-- [ ] Regenerate `Cargo.lock`
+- [x] `name = "quell"`
+- [x] `[[bin]] name = "quell"`
+- [x] `[[lib]] name = "quell"`
+- [x] `repository = "https://github.com/FurbySoup/quell"`
+- [x] Regenerate `Cargo.lock`
 
 **Source code (src/):**
-- [ ] `src/main.rs` — log messages: "quell starting", "quell shutting down"
-- [ ] `src/main.rs` — default log filename: `quell.log`
-- [ ] `src/config/mod.rs` — `#[command(name = "quell")]`
-- [ ] `src/config/mod.rs` — help text / about string
-- [ ] `src/config/settings.rs` — config dir: `p.join("quell")`
+- [x] `src/main.rs` — log messages: "quell starting", "quell shutting down"
+- [x] `src/main.rs` — default log filename: `quell.log`
+- [x] `src/config/mod.rs` — `#[command(name = "quell")]`
+- [x] `src/config/mod.rs` — help text / about string, env var `QUELL_LOG_FILE`
+- [x] `src/config/settings.rs` — config dir: `p.join("quell")`
 
 **Tests:**
-- [ ] `tests/integration/main.rs` — all `use terminal_exploration::` → `use quell::`
+- [x] `tests/integration/main.rs` — all `use terminal_exploration::` → `use quell::`
 
 **Documentation:**
-- [ ] `CLAUDE.md` — project title, architecture diagram, log paths, all references
-- [ ] `ROADMAP.md` — title, config examples, log paths
-- [ ] `SECURITY.md` — project description, config file names (`.quell.toml`), verification commands, GitHub PVR URL
-- [ ] `research/USER-PERSONAS.md` — all "terminal-exploration" references → "quell"
-- [ ] `research/UX-FEATURES.md` — all "terminal-exploration" references → "quell"
-- [ ] `research/PRIVACY-TRUST-MODEL.md` — config file references, comparison table
-- [ ] `research/INITIAL PROJECT RESEARCH.md` — "claude-terminal" references (historical, may leave as-is)
+- [x] `CLAUDE.md` — project title, architecture diagram, log paths, all references
+- [x] `ROADMAP.md` — title, config examples, log paths
+- [x] `SECURITY.md` — project description, config file names, verification commands, GitHub PVR URL
+- [x] `research/USER-PERSONAS.md` — all references updated
+- [x] `research/UX-FEATURES.md` — all references updated
+- [x] `research/PRIVACY-TRUST-MODEL.md` — config file references, comparison table
+- [x] `research/session-management.md`, `progress-visualization.md`, `keyboard-input.md`, `architecture.md` — all references updated
 
-**GitHub:**
+**GitHub (manual):**
 - [ ] Rename repository: `FurbySoup/terminal-exploration` → `FurbySoup/quell`
 - [ ] Update repo description
 - [ ] Reserve `quell` on crates.io (publish placeholder or first release)
 
 **Config paths:**
-- [ ] `%APPDATA%\quell\config.toml` (was `terminal-exploration`)
-- [ ] `logs/quell.log` (was `terminal-exploration.log`)
-- [ ] Project-local config: `.quell.toml` or `quell.toml` (if kept)
+- [x] `%APPDATA%\quell\config.toml`
+- [x] `logs/quell.log`
 
 ### Phase 1 Config Surface
 ```toml
@@ -153,7 +151,7 @@ allowed_schemes = ["http", "https", "file"]
 
 [logging]
 level = "info"
-# file = "logs/terminal-exploration.log"
+# file = "logs/quell.log"
 ```
 
 ---

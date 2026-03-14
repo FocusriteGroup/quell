@@ -20,7 +20,7 @@ fn main() -> Result<()> {
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        "terminal-exploration starting"
+        "quell starting"
     );
 
     // Warn if trace-level logging is enabled — it may capture raw terminal content
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     // Run the proxy — returns the child's exit code
     let exit_code = run_proxy(&command_line, config)?;
 
-    info!(exit_code, "terminal-exploration shutting down");
+    info!(exit_code, "quell shutting down");
 
     // Force-exit the process. The input thread may still be blocked in
     // ReadFile on the console handle (Windows doesn't support cancelling
@@ -121,7 +121,7 @@ fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocki
             .unwrap_or(std::path::Path::new("."));
         let log_filename = std::path::Path::new(log_file)
             .file_name()
-            .unwrap_or(std::ffi::OsStr::new("terminal-exploration.log"));
+            .unwrap_or(std::ffi::OsStr::new("quell.log"));
 
         let file_appender = tracing_appender::rolling::daily(log_dir, log_filename);
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);

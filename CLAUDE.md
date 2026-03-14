@@ -1,4 +1,4 @@
-# Terminal Exploration — Project Guide
+# Quell — Project Guide
 
 ## What This Is
 
@@ -30,7 +30,7 @@ Key topics covered:
 ## Architecture
 
 ```
-User's Terminal ←→ terminal-exploration (proxy) ←→ ConPTY ←→ AI CLI tool (e.g. Claude Code)
+User's Terminal ←→ quell (proxy) ←→ ConPTY ←→ AI CLI tool (e.g. Claude Code)
 ```
 
 Core modules:
@@ -85,7 +85,7 @@ RUST_LOG=debug cargo test           # Tests with log output
 
 **Log format:**
 - Structured fields: `tracing::info!(bytes = data.len(), elapsed_ms = elapsed, "render complete")`
-- File output: `logs/terminal-exploration.log` (rotated, configurable)
+- File output: `logs/quell.log` (rotated, configurable)
 - Console output: Controlled by `RUST_LOG` env var
 
 **When adding a feature, you MUST add:**

@@ -2,7 +2,7 @@
 
 ## What This Tool Does
 
-terminal-exploration is a terminal proxy that sits between your terminal emulator and an AI CLI tool (Claude Code, Copilot CLI, Gemini CLI). It intercepts VT output, tracks screen state, and sends only differential updates to eliminate scroll-jumping and flicker.
+quell is a terminal proxy that sits between your terminal emulator and an AI CLI tool (Claude Code, Copilot CLI, Gemini CLI). It intercepts VT output, tracks screen state, and sends only differential updates to eliminate scroll-jumping and flicker.
 
 ## What The Proxy Can See
 
@@ -73,12 +73,12 @@ The proxy saves and restores terminal mode on exit, including on panic. A crash 
 | Child attempts clipboard read via OSC 52 | OSC 52 stripped entirely |
 | Supply chain compromise of a dependency | `cargo-audit` in CI, minimal dependency surface |
 | Modified binary distributed as the real tool | SHA256 checksums on releases, code signing (Phase 2) |
-| Malicious `.terminal-exploration.toml` in a cloned repo | Warning on project-local config, no command execution from config |
+| Malicious `.quell.toml` in a cloned repo | Warning on project-local config, no command execution from config |
 | Trace logging captures secrets to log file | Startup warning when trace enabled; default level captures metadata only |
 
 ## Vulnerability Reporting
 
-If you discover a security vulnerability, please report it through [GitHub's Private Vulnerability Reporting](https://github.com/FurbySoup/terminal-exploration/security/advisories/new) rather than opening a public issue. We will acknowledge receipt within 48 hours and aim to release a fix within 7 days for critical issues.
+If you discover a security vulnerability, please report it through [GitHub's Private Vulnerability Reporting](https://github.com/FurbySoup/quell/security/advisories/new) rather than opening a public issue. We will acknowledge receipt within 48 hours and aim to release a fix within 7 days for critical issues.
 
 ## Verification
 
@@ -87,14 +87,14 @@ Users can verify the proxy's security claims:
 **No network access:**
 ```
 # While the proxy is running:
-netstat -b | findstr terminal-exploration
+netstat -b | findstr quell
 # Should return nothing
 ```
 
 **No content in logs:**
 ```
 # Run with default log level, then inspect:
-findstr /i "api_key\|password\|secret" logs\terminal-exploration.log
+findstr /i "api_key\|password\|secret" logs\quell.log
 # Should return nothing (only metadata is logged)
 ```
 

@@ -1,17 +1,17 @@
 [package]
-name = "terminal-exploration"
+name = "quell"
 version = "0.1.0"
 edition = "2024"
 description = "Windows-native terminal proxy for AI CLI tools — eliminates scroll-jumping and flicker"
 license = "MIT"
-repository = "https://github.com/FurbySoup/terminal-exploration"
+repository = "https://github.com/FurbySoup/quell"
 
 [lib]
-name = "terminal_exploration"
+name = "quell"
 path = "src/lib.rs"
 
 [[bin]]
-name = "terminal-exploration"
+name = "quell"
 path = "src/main.rs"
 
 [dependencies]
