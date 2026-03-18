@@ -29,6 +29,9 @@
 pub mod events;
 pub mod key_translator;
 pub mod output_sink;
+#[cfg(feature = "recording")]
+#[deny(dead_code)]
+pub mod recorder;
 pub mod render_coalescer;
 
 pub use output_sink::OutputSink;
@@ -64,6 +67,8 @@ pub struct Proxy {
     tool: ToolKind,
     session: ConPtySession,
     event_tx: Sender<ProxyEvent>,
+    #[cfg(feature = "recording")]
+    recorder: Option<recorder::VtcapRecorder>,
 }
 
 impl Proxy {
@@ -79,9 +84,18 @@ impl Proxy {
                 tool,
                 session,
                 event_tx,
+                #[cfg(feature = "recording")]
+                recorder: None,
             },
             event_rx,
         )
+    }
+
+    /// Attach a VtcapRecorder to capture filtered output during the session.
+    #[cfg(feature = "recording")]
+    pub fn with_recorder(mut self, recorder: recorder::VtcapRecorder) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     /// Run the proxy. Blocks until the child exits or an error occurs.
@@ -234,6 +248,14 @@ impl Proxy {
                             // Filter dangerous sequences before output
                             let filtered = output_filter.filter(&data);
 
+                            // Record post-filter data for replay testing
+                            #[cfg(feature = "recording")]
+                            if let Some(ref mut rec) = self.recorder
+                                && let Err(e) = rec.write_chunk(filtered) {
+                                warn!(error = %e, "recording failed, disabling");
+                                self.recorder = None;
+                            }
+
                             // Two-pass approach:
                             // 1. Write filtered data to stdout immediately (preserves
                             //    original BSU/ESU timing for normal sync blocks)
@@ -251,17 +273,25 @@ impl Proxy {
                             let filtered_owned = filtered.to_vec();
                             let events = detector.process(&filtered_owned);
 
-                            // Check if any event in this chunk is a full-redraw sync block
-                            let mut has_full_redraw = false;
-                            for event in &events {
-                                if let SyncEvent::SyncBlock { is_full_redraw: true, .. } = event {
-                                    has_full_redraw = true;
+                            // Check if any sync block needs scroll-jump protection.
+                            // A block needs protection if:
+                            // 1. It's detected as a full-redraw (ESC[2J + cursor-home), OR
+                            // 2. It contains ESC[2J (clear screen), OR
+                            // 3. It's large (>10KB) — these are full-screen repaints
+                            //    even without explicit clear (e.g., session resume)
+                            let needs_protection = events.iter().any(|e| {
+                                if let SyncEvent::SyncBlock { data: block_data, is_full_redraw } = e {
+                                    *is_full_redraw
+                                        || memchr::memmem::find(block_data, b"\x1b[2J").is_some()
+                                        || block_data.len() > 10_000
+                                } else {
+                                    false
                                 }
-                            }
+                            });
 
-                            if has_full_redraw {
-                                // Full-redraw detected — write modified data with
-                                // clear-screen stripped, wrapped in BSU/ESU
+                            if needs_protection {
+                                // Write events individually, stripping scroll-jump
+                                // sequences from sync blocks
                                 for event in &events {
                                     match event {
                                         SyncEvent::PassThrough(bytes) => {
@@ -271,20 +301,14 @@ impl Proxy {
                                             }
                                         }
                                         SyncEvent::SyncBlock { data: block_data, is_full_redraw } => {
-                                            // Strip clear-screen from ALL sync blocks when
-                                            // a full redraw is present in this chunk. Even
-                                            // non-full-redraw blocks shouldn't clear the
-                                            // host terminal's screen.
-                                            let output_data = if *is_full_redraw {
+                                            let output_data = if *is_full_redraw
+                                                || memchr::memmem::find(block_data, b"\x1b[2J").is_some()
+                                                || block_data.len() > 10_000
+                                            {
                                                 debug!(
                                                     block_size = block_data.len(),
-                                                    "stripping clear-screen from full-redraw sync block"
-                                                );
-                                                strip_clear_screen(block_data)
-                                            } else if memchr::memmem::find(block_data, b"\x1b[2J").is_some() {
-                                                debug!(
-                                                    block_size = block_data.len(),
-                                                    "stripping clear-screen from non-full-redraw sync block"
+                                                    is_full_redraw,
+                                                    "stripping clear-screen from sync block"
                                                 );
                                                 strip_clear_screen(block_data)
                                             } else {
@@ -302,8 +326,8 @@ impl Proxy {
                                     }
                                 }
                             } else {
-                                // No full-redraw — write original filtered data directly.
-                                // This preserves the original BSU/ESU timing from ConPTY.
+                                // No protection needed — write original filtered data
+                                // directly, preserving original BSU/ESU timing from ConPTY.
                                 if let Err(e) = raw_write_all(stdout_handle, &filtered_owned) {
                                     error!(error = %e, "failed to write to stdout");
                                     break;
@@ -383,6 +407,13 @@ impl Proxy {
             warn!(error = %e, "failed to send Kitty protocol disable");
         } else {
             info!("Kitty keyboard protocol disabled");
+        }
+
+        // Finalize recording if active
+        #[cfg(feature = "recording")]
+        if let Some(rec) = self.recorder.take()
+            && let Err(e) = rec.finish() {
+            warn!(error = %e, "failed to finalize vtcap recording");
         }
 
         // Signal all threads to stop
@@ -642,7 +673,7 @@ fn run_pipe_input_loop(
 /// from full-redraw sync blocks, the content update happens without scroll jumping.
 ///
 /// Handles all cursor-home variants: ESC[H, ESC[;H, ESC[1;1H, ESC[1H
-fn strip_clear_screen(data: &[u8]) -> Vec<u8> {
+pub fn strip_clear_screen(data: &[u8]) -> Vec<u8> {
     use memchr::memmem;
 
     let clear_screen = b"\x1b[2J";

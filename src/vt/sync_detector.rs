@@ -84,12 +84,25 @@ impl SyncBlockDetector {
                         self.full_redraws_detected += 1;
                     }
 
-                    debug!(
-                        block_size = block_data.len(),
-                        is_full_redraw,
-                        total_blocks = self.sync_blocks_detected,
-                        "sync block complete"
-                    );
+                    // Log first 64 bytes of large blocks for diagnosing
+                    // scroll stability issues (what sequences trigger redraws)
+                    if block_data.len() > 10_000 {
+                        let preview_len = block_data.len().min(64);
+                        debug!(
+                            block_size = block_data.len(),
+                            is_full_redraw,
+                            total_blocks = self.sync_blocks_detected,
+                            first_bytes = ?&block_data[..preview_len],
+                            "large sync block complete"
+                        );
+                    } else {
+                        debug!(
+                            block_size = block_data.len(),
+                            is_full_redraw,
+                            total_blocks = self.sync_blocks_detected,
+                            "sync block complete"
+                        );
+                    }
 
                     events.push(SyncEvent::SyncBlock {
                         data: block_data,
