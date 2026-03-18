@@ -114,8 +114,9 @@ fn install_panic_hook() {
 fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+    let log_level = cli.log_level.as_deref().unwrap_or("info");
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
 
     if let Some(log_file) = &cli.log_file {
         // File logging with structured output — use the requested log level
@@ -148,10 +149,10 @@ fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocki
         let stderr_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| {
                 // Only override to "warn" if the user didn't explicitly set a level
-                if cli.log_level == "info" {
+                if cli.log_level.is_none() {
                     EnvFilter::new("warn")
                 } else {
-                    EnvFilter::new(&cli.log_level)
+                    EnvFilter::new(log_level)
                 }
             });
 

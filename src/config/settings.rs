@@ -67,11 +67,19 @@ impl AppConfig {
             }
         }
 
-        // CLI args override file config
-        config.render_delay_ms = cli.render_delay_ms;
-        config.sync_delay_ms = cli.sync_delay_ms;
-        config.history_lines = cli.history_lines;
-        config.log_level = cli.log_level.clone();
+        // CLI args override file config (only when explicitly passed)
+        if let Some(v) = cli.render_delay_ms {
+            config.render_delay_ms = v;
+        }
+        if let Some(v) = cli.sync_delay_ms {
+            config.sync_delay_ms = v;
+        }
+        if let Some(v) = cli.history_lines {
+            config.history_lines = v;
+        }
+        if let Some(ref v) = cli.log_level {
+            config.log_level = v.clone();
+        }
         if cli.log_file.is_some() {
             config.log_file = cli.log_file.clone();
         }

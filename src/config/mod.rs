@@ -22,8 +22,8 @@ pub struct Cli {
     pub args: Vec<String>,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "info", env = "RUST_LOG")]
-    pub log_level: String,
+    #[arg(long, env = "RUST_LOG")]
+    pub log_level: Option<String>,
 
     /// Log file path (if not set, logs to stderr)
     #[arg(long, env = "QUELL_LOG_FILE")]
@@ -34,16 +34,16 @@ pub struct Cli {
     pub config: Option<String>,
 
     /// Render delay in milliseconds for normal output
-    #[arg(long, default_value = "5")]
-    pub render_delay_ms: u64,
+    #[arg(long)]
+    pub render_delay_ms: Option<u64>,
 
     /// Render delay in milliseconds for synchronized output blocks
-    #[arg(long, default_value = "50")]
-    pub sync_delay_ms: u64,
+    #[arg(long)]
+    pub sync_delay_ms: Option<u64>,
 
     /// Maximum history lines to retain
-    #[arg(long, default_value = "100000")]
-    pub history_lines: usize,
+    #[arg(long)]
+    pub history_lines: Option<usize>,
 
     /// AI tool override (auto-detected from command if not set)
     #[arg(long, value_parser = tool::parse_tool_kind)]
