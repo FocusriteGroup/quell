@@ -24,10 +24,12 @@ Core modules:
 ## Build & Run
 
 ```bash
-cargo build                    # Debug build
+cargo build                    # Debug build (production features only)
 cargo build --release          # Release build
+cargo build --features recording  # Dev build with VT recording support
 cargo run -- claude -- --dangerously-skip-permissions  # Run with Claude Code as child process
-cargo test                     # Run all tests
+cargo test                     # Run all tests (default features)
+cargo test --features recording  # Run all tests including recording
 cargo test --test unit         # Unit tests only
 cargo test --test integration  # Integration tests only
 cargo bench                    # Run benchmarks
@@ -74,6 +76,30 @@ RUST_LOG=debug cargo test           # Tests with log output
 2. `debug!` logs for decision points and state changes
 3. `warn!` logs for anything unexpected but handled
 4. Structured fields (not string interpolation) for machine-parseable logs
+
+## Feature Flags
+
+Dev-only functionality is gated behind Cargo feature flags to keep the production binary lean.
+
+| Feature | Purpose | What it gates |
+|---------|---------|---------------|
+| `recording` | VT output capture for replay testing | `--record` CLI flag, `recorder.rs` module, `Proxy.recorder` field, hot-path recording hook |
+
+**Rules:**
+- Default features are empty — `cargo build` produces a clean production binary
+- Dev/test builds use `cargo build --features recording` or `cargo test --features recording`
+- **Never add runtime dependencies (Cargo.toml `[dependencies]`) for feature-gated code.** Use only stdlib. If a dep is truly needed, make it optional: `foo = { version = "X", optional = true }` and add it to the feature's dep list.
+- **Never add unconditional code to the hot path** (the `recv(output_rx)` loop in `proxy/mod.rs`) for dev-only features. All hot-path additions must be behind `#[cfg(feature = "...")]`.
+- New dev-only features must follow this same pattern: feature flag in `Cargo.toml`, `#[cfg]` on all production-path code.
+- The release CI workflow (`cargo build --release`) must NOT enable dev features.
+
+**Testing both configurations:**
+```bash
+cargo test                            # Default (no dev features) — must pass
+cargo test --features recording       # With recording — must also pass
+cargo clippy --lib                    # Default — no warnings
+cargo clippy --lib --features recording  # With recording — no warnings
+```
 
 ## Code Conventions
 

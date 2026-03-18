@@ -56,6 +56,9 @@ fn main() -> Result<()> {
     print_banner(&child_command);
 
     // Run the proxy — returns the child's exit code
+    #[cfg(feature = "recording")]
+    let exit_code = run_proxy(&command_line, config, tool, cli.record.as_deref())?;
+    #[cfg(not(feature = "recording"))]
     let exit_code = run_proxy(&command_line, config, tool)?;
 
     info!(exit_code, "quell shutting down");
@@ -67,23 +70,54 @@ fn main() -> Result<()> {
     std::process::exit(exit_code as i32);
 }
 
+#[cfg(feature = "recording")]
+fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind, record_path: Option<&str>) -> Result<u32> {
+    let (cols, rows, console_mode, session) = setup_proxy(command_line)?;
+
+    // Create and run the proxy
+    let (proxy, _events) = Proxy::new(config, tool, session);
+    let proxy = if let Some(path) = record_path {
+        let recorder = proxy::recorder::VtcapRecorder::create(
+            std::path::Path::new(path),
+            cols as u16,
+            rows as u16,
+            &"quell",
+        )?;
+        proxy.with_recorder(recorder)
+    } else {
+        proxy
+    };
+    let result = proxy.run();
+
+    teardown_proxy(console_mode);
+    result
+}
+
+#[cfg(not(feature = "recording"))]
 fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind) -> Result<u32> {
-    // Detect terminal size
+    let (_cols, _rows, console_mode, session) = setup_proxy(command_line)?;
+
+    // Create and run the proxy
+    let (proxy, _events) = Proxy::new(config, tool, session);
+    let result = proxy.run();
+
+    teardown_proxy(console_mode);
+    result
+}
+
+/// Common proxy setup: detect size, set console mode, spawn child.
+fn setup_proxy(command_line: &str) -> Result<(i16, i16, ConsoleMode, ConPtySession)> {
     let (cols, rows) = conpty::get_terminal_size().unwrap_or((120, 30));
     info!(cols, rows, "detected terminal size");
 
-    // Save console mode and set raw/VT mode
     let console_mode = ConsoleMode::save_and_set_raw()
         .context("failed to save/set console mode")?;
 
-    // Install panic hook to restore console before printing panic
     install_panic_hook();
 
-    // Spawn child in ConPTY
     let session = match ConPtySession::spawn(command_line, cols, rows) {
         Ok(s) => s,
         Err(e) => {
-            // Restore console mode before propagating spawn error
             let _ = console_mode.restore();
             std::mem::forget(console_mode);
             // Extract the base command name for friendly messages
@@ -99,18 +133,15 @@ fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind) -> R
         }
     };
 
-    // Create and run the proxy
-    let (proxy, _events) = Proxy::new(config, tool, session);
-    let result = proxy.run();
+    Ok((cols, rows, console_mode, session))
+}
 
-    // Always restore console mode, even if proxy.run() failed
+/// Common proxy teardown: restore console mode.
+fn teardown_proxy(console_mode: ConsoleMode) {
     if let Err(e) = console_mode.restore() {
         warn!(error = %e, "failed to restore console mode");
     }
-    // Prevent double-restore in Drop
     std::mem::forget(console_mode);
-
-    result
 }
 
 /// Print a branded startup banner to stderr.

@@ -6,6 +6,11 @@ description = "Windows-native terminal proxy for AI CLI tools — eliminates scr
 license = "MIT"
 repository = "https://github.com/FurbySoup/quell"
 
+[features]
+default = []
+# Dev-only: VT output recording (--record flag). Not compiled into release builds.
+recording = []
+
 [lib]
 name = "quell"
 path = "src/lib.rs"

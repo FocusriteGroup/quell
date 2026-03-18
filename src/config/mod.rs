@@ -52,4 +52,9 @@ pub struct Cli {
     /// Enable verbose output for troubleshooting
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Record filtered VT output to a .vtcap file for replay testing
+    #[cfg(feature = "recording")]
+    #[arg(long, value_name = "PATH")]
+    pub record: Option<String>,
 }
