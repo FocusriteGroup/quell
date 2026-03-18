@@ -34,7 +34,7 @@ impl EscapeFilter {
             match parser.parse_first_as_vec(&data[pos..]) {
                 Some((actions, consumed)) if consumed > 0 => {
                     let original = &data[pos..pos + consumed];
-                    if actions.iter().all(|a| is_safe_for_replay(a)) {
+                    if actions.iter().all(is_safe_for_replay) {
                         output.extend_from_slice(original);
                     } else {
                         trace!(

@@ -40,6 +40,12 @@ enum FilterState {
     PendingC2,
 }
 
+impl Default for OutputFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OutputFilter {
     pub fn new() -> Self {
         info!("output filter initialized");
@@ -177,13 +183,12 @@ impl OutputFilter {
                         // BEL terminates (some terminals accept this for DCS too)
                         self.queries_stripped += 1;
                         self.state = FilterState::Normal;
-                    } else if b == 0x1B {
-                        if i < data.len() && data[i] == b'\\' {
-                            // ST terminator
-                            i += 1;
-                            self.queries_stripped += 1;
-                            self.state = FilterState::Normal;
-                        }
+                    } else if b == 0x1B
+                        && i < data.len() && data[i] == b'\\' {
+                        // ST terminator
+                        i += 1;
+                        self.queries_stripped += 1;
+                        self.state = FilterState::Normal;
                         // else: ESC at chunk boundary or inside DCS — keep scanning
                     }
                 }

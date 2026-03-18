@@ -52,7 +52,7 @@ enum ShutdownReason {
     InputEof,
     OutputEof,
     ChildExited,
-    IoError(String),
+    IoError(#[allow(dead_code)] String),
 }
 
 /// The proxy coordinator. Owns all processing state and runs the main loop.
@@ -102,7 +102,7 @@ impl Proxy {
         let (output_tx, output_rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(64);
         let (shutdown_tx, shutdown_rx): (Sender<ShutdownReason>, Receiver<ShutdownReason>) =
             bounded(4);
-        let (resize_tx, resize_rx): (Sender<(i16, i16)>, Receiver<(i16, i16)>) = bounded(4);
+        let (resize_tx, resize_rx) = bounded::<(i16, i16)>(4);
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
@@ -341,25 +341,25 @@ impl Proxy {
                     }
                 }
                 recv(resize_rx) -> msg => {
-                    if let Ok((new_cols, new_rows)) = msg {
-                        if (new_cols, new_rows) != last_size {
-                            info!(
-                                old_cols = last_size.0,
-                                old_rows = last_size.1,
-                                new_cols,
-                                new_rows,
-                                "terminal resize detected"
-                            );
-                            if let Err(e) = self.session.resize(new_cols, new_rows) {
-                                warn!(error = %e, "failed to resize ConPTY");
-                            }
-                            last_size = (new_cols, new_rows);
-
-                            let _ = self.event_tx.try_send(ProxyEvent::Resize {
-                                cols: new_cols,
-                                rows: new_rows,
-                            });
+                    if let Ok((new_cols, new_rows)) = msg
+                        && (new_cols, new_rows) != last_size
+                    {
+                        info!(
+                            old_cols = last_size.0,
+                            old_rows = last_size.1,
+                            new_cols,
+                            new_rows,
+                            "terminal resize detected"
+                        );
+                        if let Err(e) = self.session.resize(new_cols, new_rows) {
+                            warn!(error = %e, "failed to resize ConPTY");
                         }
+                        last_size = (new_cols, new_rows);
+
+                        let _ = self.event_tx.try_send(ProxyEvent::Resize {
+                            cols: new_cols,
+                            rows: new_rows,
+                        });
                     }
                 }
             }
@@ -491,7 +491,7 @@ fn run_console_input_loop(
     };
     use windows::Win32::System::Threading::WaitForMultipleObjects;
 
-    let stdin_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE).unwrap_or(HANDLE::default()) };
+    let stdin_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE).unwrap_or_default() };
     let event_handle = HANDLE(shutdown_event_handle as *mut _);
     let handles = [stdin_handle, event_handle];
     let mut records = vec![INPUT_RECORD::default(); 128];
