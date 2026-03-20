@@ -48,4 +48,8 @@ pub struct Cli {
     /// AI tool override (auto-detected from command if not set)
     #[arg(long, value_parser = tool::parse_tool_kind)]
     pub tool: Option<ToolKind>,
+
+    /// Enable verbose output for troubleshooting
+    #[arg(short, long)]
+    pub verbose: bool,
 }

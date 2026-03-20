@@ -33,9 +33,17 @@ quell intercepts the child process output via Windows ConPTY, processes VT escap
 
 ## Quick Start
 
-### Download
+### Install
 
-Grab the latest `quell.exe` from [Releases](https://github.com/FurbySoup/quell/releases).
+1. Download `quell.exe` from [Releases](https://github.com/FurbySoup/quell/releases)
+2. Place it in a folder on your PATH (e.g. `C:\Users\YOU\.local\bin`)
+3. Open a new terminal and run:
+
+```bash
+quell claude
+```
+
+That's it. quell shows a banner when it starts, launches Claude Code behind it, and keeps your scroll position stable.
 
 ### Usage
 
@@ -49,6 +57,9 @@ quell copilot
 
 # Explicit tool override (affects Shift+Enter behavior)
 quell --tool claude my-custom-claude-wrapper
+
+# Verbose output for troubleshooting
+quell --verbose claude
 ```
 
 ### Build from Source
@@ -61,6 +72,17 @@ cd quell
 cargo build --release
 # Binary at target/release/quell.exe
 ```
+
+### Troubleshooting
+
+**`quell claude` does nothing / not recognized**
+Your PATH points to the exe file itself instead of the folder containing it. `PATH` entries must be directories, not files. Move `quell.exe` into a directory that's already on your PATH, or add the directory (not the file) to PATH.
+
+**`failed to spawn process (0x80070002)`**
+The child command (`claude`, `gemini`, etc.) isn't on your PATH. Run `where claude` to check. If nothing is found, install the tool first.
+
+**Scroll still jumps**
+Make sure you're on the latest release. Run `quell --verbose claude` and check the debug output for clues. If the issue persists, [open an issue](https://github.com/FurbySoup/quell/issues) with the verbose log.
 
 ## Configuration
 
@@ -94,6 +116,10 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 - **Windows 10 1809+** (ConPTY support required)
 - **Windows Terminal 1.25+** for Shift+Enter support (older terminals still work, Alt+Enter remains available)
+
+## Known Limitations
+
+- **Emoji picker (WIN+.)** and **IME input** may not work through quell. This is a ConPTY limitation. Workaround: copy-paste emoji via Ctrl+V.
 
 ## Roadmap
 
