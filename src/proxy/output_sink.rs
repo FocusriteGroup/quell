@@ -32,6 +32,7 @@ pub struct StdoutSink {
 }
 
 impl StdoutSink {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let handle = raw_stdout_handle();
         Self {

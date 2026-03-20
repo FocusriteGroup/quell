@@ -163,8 +163,6 @@ fn init_logging(cli: &config::Cli) -> Result<Option<tracing_appender::non_blocki
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     let log_level = cli.log_level.as_deref().unwrap_or("info");
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_level));
 
     // --verbose without --log-file: auto-create a log file so debug output
     // doesn't corrupt the proxied terminal display.
