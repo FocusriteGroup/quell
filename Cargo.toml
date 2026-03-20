@@ -78,6 +78,9 @@ harness = false
 name = "sync_detection"
 harness = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("recording"))'] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"
