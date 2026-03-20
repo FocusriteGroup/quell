@@ -23,7 +23,7 @@ quell intercepts the child process output via Windows ConPTY, processes VT escap
 
 ## Features
 
-- **Scroll stability** — read earlier output while new content streams in
+- **Scroll stability** — eliminates the worst scroll-jumping; read earlier output while new content streams in (see [Known Limitations](#known-limitations) for edge cases in very long sessions)
 - **Shift+Enter support** — inserts newline in Claude Code via [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (Windows Terminal 1.25+)
 - **Security filtering** — blocks clipboard access (OSC 52), dangerous URL schemes (ssh://, javascript://), terminal query attacks, and C1 control characters
 - **Full Unicode** — emoji, CJK, box-drawing, mathematical symbols all render correctly
@@ -119,6 +119,7 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Known Limitations
 
+- **Long sessions may still experience partial scroll shifting.** quell eliminates the worst scroll-jumping (full snap to top of screen) by stripping `ESC[3J` and `ESC[2J` sequences. However, in very long sessions (~25KB+ of conversation history), cursor-home sequences during screen repaints can cause a partial viewport shift. This is caused by an [upstream Windows Terminal bug](https://github.com/microsoft/terminal/issues/14774) where `SetConsoleCursorPosition` always snaps the viewport to the cursor, and by [Claude Code's rendering approach](https://github.com/anthropics/claude-code/issues/34794) which repaints the full screen on every update. Phase 2 (standalone terminal) will eliminate this entirely by controlling the rendering surface directly.
 - **Emoji picker (WIN+.)** and **IME input** may not work through quell. This is a ConPTY limitation. Workaround: copy-paste emoji via Ctrl+V.
 
 ## Roadmap
