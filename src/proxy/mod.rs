@@ -34,6 +34,7 @@ pub mod output_sink;
 pub mod recorder;
 pub mod render_coalescer;
 
+#[allow(unused_imports)] // Phase 2 — re-export used by Tauri GUI
 pub use output_sink::OutputSink;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -256,21 +257,17 @@ impl Proxy {
                                 self.recorder = None;
                             }
 
-                            // Two-pass approach:
-                            // 1. Write filtered data to stdout immediately (preserves
-                            //    original BSU/ESU timing for normal sync blocks)
-                            // 2. Feed sync detector to identify full-redraw blocks
-                            //    and strip clear-screen sequences retroactively
+                            // Sync-aware filtering:
+                            // The output filter tracks BSU/ESU state and only
+                            // strips ESC[2J outside sync blocks. Inside sync
+                            // blocks, ESC[2J passes through — the terminal
+                            // renders BSU/ESU content atomically, so the clear
+                            // + redraw happens in one frame (no viewport jump).
+                            // ESC[3J (erase scrollback) is always stripped.
                             //
-                            // For full-redraw sync blocks, we can't prevent the
-                            // initial write, so we use an alternative approach:
-                            // detect the full-redraw pattern and overwrite the
-                            // screen position after the block completes.
-
-                            // Write filtered data directly to stdout.
-                            // ESC[2J stripping is handled by the output filter
-                            // (after initial 64KB setup). All other sync block
-                            // timing (BSU/ESU) is preserved from ConPTY.
+                            // This ensures the sync detector downstream sees
+                            // ESC[2J inside sync blocks, correctly identifying
+                            // full-redraw blocks for history management.
                             let filtered_owned = filtered.to_vec();
                             if let Err(e) = raw_write_all(stdout_handle, &filtered_owned) {
                                 error!(error = %e, "failed to write to stdout");
@@ -619,6 +616,7 @@ fn run_pipe_input_loop(
 /// from full-redraw sync blocks, the content update happens without scroll jumping.
 ///
 /// Handles all cursor-home variants: ESC[H, ESC[;H, ESC[1;1H, ESC[1H
+#[allow(dead_code)] // Used by replay tests and output filter
 pub fn strip_clear_screen(data: &[u8]) -> Vec<u8> {
     use memchr::memmem;
 
@@ -647,6 +645,28 @@ pub fn strip_clear_screen(data: &[u8]) -> Vec<u8> {
     }
 
     result
+}
+
+/// Get the raw stdout handle for direct WriteFile access.
+/// We bypass Rust's `std::io::stdout()` because it uses `WriteConsoleW` in console mode,
+/// which rejects non-UTF-8 byte sequences (e.g., emoji split across ConPTY chunks).
+fn raw_stdout_handle() -> windows::Win32::Foundation::HANDLE {
+    use windows::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+    unsafe { GetStdHandle(STD_OUTPUT_HANDLE).expect("failed to get stdout handle") }
+}
+
+/// Write all bytes to a raw handle using WriteFile.
+fn raw_write_all(handle: windows::Win32::Foundation::HANDLE, mut data: &[u8]) -> anyhow::Result<()> {
+    use windows::Win32::Storage::FileSystem::WriteFile;
+    while !data.is_empty() {
+        let mut written = 0u32;
+        unsafe {
+            WriteFile(handle, Some(data), Some(&mut written), None)
+                .map_err(|e| anyhow::anyhow!("WriteFile failed: {e}"))?;
+        }
+        data = &data[written as usize..];
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -715,26 +735,4 @@ mod strip_tests {
         let result = strip_clear_screen(input);
         assert_eq!(result, b"screen content");
     }
-}
-
-/// Get the raw stdout handle for direct WriteFile access.
-/// We bypass Rust's `std::io::stdout()` because it uses `WriteConsoleW` in console mode,
-/// which rejects non-UTF-8 byte sequences (e.g., emoji split across ConPTY chunks).
-fn raw_stdout_handle() -> windows::Win32::Foundation::HANDLE {
-    use windows::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
-    unsafe { GetStdHandle(STD_OUTPUT_HANDLE).expect("failed to get stdout handle") }
-}
-
-/// Write all bytes to a raw handle using WriteFile.
-fn raw_write_all(handle: windows::Win32::Foundation::HANDLE, mut data: &[u8]) -> anyhow::Result<()> {
-    use windows::Win32::Storage::FileSystem::WriteFile;
-    while !data.is_empty() {
-        let mut written = 0u32;
-        unsafe {
-            WriteFile(handle, Some(data), Some(&mut written), None)
-                .map_err(|e| anyhow::anyhow!("WriteFile failed: {e}"))?;
-        }
-        data = &data[written as usize..];
-    }
-    Ok(())
 }

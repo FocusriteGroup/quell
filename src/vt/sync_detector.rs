@@ -174,11 +174,13 @@ impl SyncBlockDetector {
     }
 
     /// Returns whether the detector is currently inside a sync block
+    #[allow(dead_code)] // Phase 2 — used for structured output state
     pub fn in_sync_block(&self) -> bool {
         self.in_sync_block
     }
 
     /// Returns accumulated metrics
+    #[allow(dead_code)] // Phase 2 — used for status bar metrics
     pub fn metrics(&self) -> SyncMetrics {
         SyncMetrics {
             sync_blocks_detected: self.sync_blocks_detected,
@@ -230,6 +232,7 @@ impl Default for SyncBlockDetector {
 
 /// Metrics from sync block detection
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase 2
 pub struct SyncMetrics {
     pub sync_blocks_detected: u64,
     pub full_redraws_detected: u64,

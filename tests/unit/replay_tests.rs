@@ -14,6 +14,7 @@ use quell::vt::{SyncBlockDetector, SyncEvent};
 struct ReplayResult {
     output: Vec<u8>,
     input_bytes: usize,
+    #[allow(dead_code)] // Read in feature-gated fixture replay test
     sync_block_count: usize,
     full_redraw_count: usize,
     osc52_stripped: u64,
@@ -323,6 +324,44 @@ fn test_replay_mixed_streaming_integrity() {
     assert!(
         memchr::memmem::find(&result.output, b"Final text").is_some(),
         "final text lost"
+    );
+}
+
+// ── Regression: sync-aware ESC[2J filtering ─────────────────────────
+
+#[test]
+fn test_replay_full_redraw_detected_after_64kb() {
+    // Regression: ESC[2J inside sync blocks must not be stripped
+    // even after 64KB of output (the old threshold-based behavior).
+    // The output filter now tracks BSU/ESU state and only strips
+    // ESC[2J outside sync blocks.
+    let preamble = vec![b'x'; 70_000]; // > 64KB
+    let full_redraw =
+        b"\x1b[?2026h\x1b[2J\x1b[HRedraw content\r\n\x1b[?2026l";
+
+    let result = replay_pipeline(&[&preamble, full_redraw]);
+    assert_eq!(
+        result.full_redraw_count, 1,
+        "full-redraw sync block after 64KB must still be detected"
+    );
+}
+
+#[test]
+fn test_replay_clear_screen_stripped_outside_sync_after_startup() {
+    // ESC[2J outside sync blocks is stripped after the startup grace
+    // period (first 2 allowed). The new approach is sync-aware with
+    // a small startup allowance, not byte-threshold based.
+    let result = replay_pipeline(&[
+        b"\x1b[2J",  // startup grace 1 — allowed
+        b"\x1b[2J",  // startup grace 2 — allowed
+        b"\x1b[2J",  // 3rd outside sync block — stripped
+    ]);
+    // The 3rd ESC[2J should be stripped; first 2 pass through but
+    // are pass-through data (not in sync blocks), so they appear in output
+    assert_eq!(
+        memchr::memmem::find_iter(&result.output, b"\x1b[2J").count(),
+        2,
+        "only startup grace ESC[2J should pass through"
     );
 }
 

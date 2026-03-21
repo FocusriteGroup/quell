@@ -1,3 +1,4 @@
+#![allow(dead_code)] // Phase 2 extension point — replay filtering used by tests + Tauri GUI
 // Escape sequence filter for safe history replay
 //
 // When replaying history, we need to strip sequences that could

@@ -233,7 +233,6 @@ pub fn read_vtcap(path: &Path) -> Result<(VtcapHeader, Vec<VtcapChunk>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     #[test]
     fn test_round_trip() {

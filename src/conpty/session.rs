@@ -87,6 +87,7 @@ impl ConPtySession {
     }
 
     /// Block until the child process exits. Returns the exit code.
+    #[allow(dead_code)] // Phase 2 — used when proxy manages child lifecycle directly
     pub fn wait_for_child(&self) -> Result<u32> {
         debug!(pid = self.process_id, "waiting for child process");
         sys::wait_for_single_object(self.process_handle, None)?;
@@ -114,6 +115,7 @@ impl ConPtySession {
     }
 
     /// Get the child process ID.
+    #[allow(dead_code)] // Phase 2 — used for process management in Tauri
     pub fn process_id(&self) -> u32 {
         self.process_id
     }
@@ -144,7 +146,6 @@ impl Drop for ConPtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_spawn_succeeds() {

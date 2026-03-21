@@ -21,6 +21,7 @@ impl OwnedHandle {
     }
 
     /// Get the raw HANDLE value.
+    #[allow(dead_code)] // Phase 2 extension point
     pub fn raw(&self) -> HANDLE {
         self.handle
     }

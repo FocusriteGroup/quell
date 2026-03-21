@@ -11,13 +11,22 @@ use tracing::{debug, info, warn};
 ///
 /// Strips dangerous escape sequences before they reach the user's terminal.
 /// Handles sequences that span chunk boundaries via internal state machine.
+///
+/// Tracks BSU/ESU (DEC Mode 2026) synchronized update state so that
+/// ESC[2J is only stripped outside sync blocks. Inside sync blocks,
+/// ESC[2J is safe — the terminal renders atomically, preventing
+/// viewport jumps. ESC[3J (erase scrollback) is always stripped.
 pub struct OutputFilter {
     state: FilterState,
     /// Output buffer for the current filter() call
     output: Vec<u8>,
-    /// Total bytes processed — used to skip ESC[2J stripping during
-    /// initial display setup (first ~64KB of output)
-    total_bytes_processed: u64,
+    /// Whether we're inside a BSU/ESU synchronized update block.
+    /// ESC[2J is allowed through inside sync blocks (atomic render).
+    in_sync_block: bool,
+    /// Number of ESC[2J sequences allowed outside sync blocks during
+    /// startup. The first 2 clear-screens are needed for the child
+    /// process to set up its UI (initial clear + possible config reload).
+    startup_clears_remaining: u8,
     /// Metrics
     osc52_stripped: u64,
     osc50_stripped: u64,
@@ -56,7 +65,8 @@ impl OutputFilter {
         Self {
             state: FilterState::Normal,
             output: Vec::with_capacity(8192),
-            total_bytes_processed: 0,
+            in_sync_block: false,
+            startup_clears_remaining: 2,
             osc52_stripped: 0,
             osc50_stripped: 0,
             c1_bytes_stripped: 0,
@@ -70,7 +80,6 @@ impl OutputFilter {
     /// Filter a chunk of output. Returns the filtered bytes.
     /// Handles sequences split across chunks via internal state.
     pub fn filter(&mut self, data: &[u8]) -> &[u8] {
-        self.total_bytes_processed += data.len() as u64;
         self.output.clear();
         self.output.reserve(data.len());
 
@@ -139,6 +148,12 @@ impl OutputFilter {
                         if self.is_blocked_csi(&csi_buf) {
                             self.queries_stripped += 1;
                         } else {
+                            // Track BSU/ESU for sync-aware clear-screen filtering
+                            if csi_buf == b"?2026h" {
+                                self.in_sync_block = true;
+                            } else if csi_buf == b"?2026l" {
+                                self.in_sync_block = false;
+                            }
                             self.output.push(0x1B);
                             self.output.push(b'[');
                             self.output.extend_from_slice(&csi_buf);
@@ -240,24 +255,38 @@ impl OutputFilter {
             b'p' => params.ends_with(b"$") && params.starts_with(b"?"),
             // Kitty keyboard query: CSI ? u
             b'u' => params == b"?",
-            // CSI 2 J — erase entire display. Stripped after initial
-            // display setup (~64KB) to prevent scroll jumping. The
-            // first few clear-screens are needed for the child process
-            // to set up its UI; after that they're redundant repaints
-            // that reset the viewport position.
             // CSI 3 J — erase scrollback buffer. Always stripped — this
             // destroys the user's scroll history and snaps the viewport.
-            b'J' if params == b"3" || (params == b"2" && self.total_bytes_processed > 65_536) => {
+            // CSI 2 J — erase entire display. Stripped only OUTSIDE
+            // BSU/ESU sync blocks (with a startup grace period).
+            // Inside sync blocks, ESC[2J is safe because the terminal
+            // renders atomically (no visible jump). Outside sync blocks,
+            // the first 2 are allowed for initial UI setup, then stripped.
+            b'J' if params == b"3"
+                || (params == b"2" && !self.in_sync_block
+                    && self.startup_clears_remaining == 0) =>
+            {
                 self.clear_screen_stripped += 1;
                 if self.clear_screen_stripped <= 5 {
                     debug!(
-                        total_bytes = self.total_bytes_processed,
                         count = self.clear_screen_stripped,
                         variant = ?params,
                         "stripping clear-screen/scrollback"
                     );
                 }
                 true
+            }
+            // ESC[2J outside sync block during startup grace — allow through
+            // but decrement the remaining count
+            b'J' if params == b"2" && !self.in_sync_block
+                && self.startup_clears_remaining > 0 =>
+            {
+                self.startup_clears_remaining -= 1;
+                debug!(
+                    remaining = self.startup_clears_remaining,
+                    "startup clear-screen allowed through"
+                );
+                false
             }
             _ => false,
         }
@@ -392,6 +421,7 @@ impl OutputFilter {
         self.output.push(0x07);
     }
 
+    #[allow(dead_code)] // Phase 2 — used for status bar metrics
     pub fn metrics(&self) -> OutputFilterMetrics {
         OutputFilterMetrics {
             osc52_stripped: self.osc52_stripped,
@@ -405,6 +435,7 @@ impl OutputFilter {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase 2
 pub struct OutputFilterMetrics {
     pub osc52_stripped: u64,
     pub osc50_stripped: u64,
@@ -751,5 +782,80 @@ mod tests {
         let result2 = f.filter(b"\xA9more");
         assert_eq!(result1, b"text");
         assert_eq!(result2, b"\xC2\xA9more");
+    }
+
+    // ── Sync-aware ESC[2J filtering ──────────────────────────────────
+
+    #[test]
+    fn test_clear_screen_stripped_outside_sync_block() {
+        let mut f = OutputFilter::new();
+        // First 2 ESC[2J outside sync blocks are allowed (startup grace)
+        let r1 = f.filter(b"\x1b[2J").to_vec();
+        assert_eq!(r1, b"\x1b[2J"); // 1st — allowed
+        let r2 = f.filter(b"\x1b[2J").to_vec();
+        assert_eq!(r2, b"\x1b[2J"); // 2nd — allowed
+        // 3rd — stripped
+        let r3 = f.filter(b"before\x1b[2Jafter");
+        assert_eq!(r3, b"beforeafter");
+    }
+
+    #[test]
+    fn test_clear_screen_passes_inside_sync_block() {
+        let mut f = OutputFilter::new();
+        // BSU + ESC[2J + ESU — clear screen inside sync block passes through
+        let input = b"\x1b[?2026h\x1b[2J\x1b[Hcontent\x1b[?2026l";
+        let result = f.filter(input);
+        assert_eq!(result, input.to_vec());
+    }
+
+    #[test]
+    fn test_erase_scrollback_always_stripped() {
+        let mut f = OutputFilter::new();
+        // ESC[3J stripped outside sync block
+        assert_eq!(f.filter(b"\x1b[3J"), b"");
+
+        // ESC[3J stripped inside sync block too
+        let result = f.filter(b"\x1b[?2026h\x1b[3Jcontent\x1b[?2026l");
+        assert_eq!(result, b"\x1b[?2026hcontent\x1b[?2026l");
+    }
+
+    #[test]
+    fn test_sync_state_across_chunks() {
+        let mut f = OutputFilter::new();
+        // BSU in chunk 1
+        let r1 = f.filter(b"\x1b[?2026h").to_vec();
+        assert_eq!(r1, b"\x1b[?2026h");
+
+        // ESC[2J in chunk 2 — should pass through (inside sync block)
+        let r2 = f.filter(b"\x1b[2J\x1b[Hcontent").to_vec();
+        assert_eq!(r2, b"\x1b[2J\x1b[Hcontent");
+
+        // ESU in chunk 3
+        let r3 = f.filter(b"\x1b[?2026l").to_vec();
+        assert_eq!(r3, b"\x1b[?2026l");
+    }
+
+    #[test]
+    fn test_sync_state_resets_after_esu() {
+        let mut f = OutputFilter::new();
+        // Exhaust startup grace period
+        f.filter(b"\x1b[2J");
+        f.filter(b"\x1b[2J");
+
+        // Complete sync block — ESC[2J passes through (inside sync)
+        f.filter(b"\x1b[?2026h\x1b[2Jcontent\x1b[?2026l");
+
+        // ESC[2J after sync block ends — should be stripped (grace exhausted)
+        let result = f.filter(b"\x1b[2Jmore");
+        assert_eq!(result, b"more");
+    }
+
+    #[test]
+    fn test_bsu_esu_sequences_pass_through() {
+        let mut f = OutputFilter::new();
+        let bsu = b"\x1b[?2026h";
+        let esu = b"\x1b[?2026l";
+        assert_eq!(f.filter(bsu), bsu.to_vec());
+        assert_eq!(f.filter(esu), esu.to_vec());
     }
 }

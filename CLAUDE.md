@@ -37,45 +37,16 @@ cargo bench                    # Run benchmarks
 
 ## Testing Requirements
 
-**Every feature must have:**
-1. Unit tests covering core logic and edge cases
-2. Integration tests verifying end-to-end behavior where applicable
-3. Live-proving against actual Claude Code before marking as done — automated tests validate correctness but real-world behavior under streaming load is the true acceptance test
+Every feature needs unit tests + integration tests where applicable. Live-proving is tracked by automated hooks (see below).
 
 **Test organization:**
 - `tests/unit/` — Pure logic tests (VT parsing, diffing, sync detection, history filtering)
 - `tests/integration/` — ConPTY spawning, pipe I/O, proxy end-to-end
 - `benches/` — Performance benchmarks (VT diffing throughput, sync detection speed)
 
-**Running tests:**
-```bash
-cargo test                          # All tests
-cargo test --test unit              # Unit tests
-cargo test --test integration       # Integration tests (may need admin on some systems)
-RUST_LOG=debug cargo test           # Tests with log output
-```
-
 ## Logging Standards
 
-**All modules must use `tracing` for structured logging.** This is non-negotiable — diagnosis is always faster with good logs.
-
-**Log levels:**
-- `error!` — Unrecoverable failures (ConPTY creation failed, pipe broken)
-- `warn!` — Recoverable issues (malformed VT sequence skipped, ConPTY noise filtered)
-- `info!` — Lifecycle events (proxy started, child spawned, resize, session ended)
-- `debug!` — Frame-level data (render triggered, diff size, sync block detected)
-- `trace!` — Byte-level data (raw VT sequences, individual cell changes)
-
-**Log format:**
-- Structured fields: `tracing::info!(bytes = data.len(), elapsed_ms = elapsed, "render complete")`
-- File output: `logs/quell.log` (rotated, configurable)
-- Console output: Controlled by `RUST_LOG` env var
-
-**When adding a feature, you MUST add:**
-1. `info!` log at the feature's entry/exit points
-2. `debug!` logs for decision points and state changes
-3. `warn!` logs for anything unexpected but handled
-4. Structured fields (not string interpolation) for machine-parseable logs
+All modules use `tracing` with structured fields (not string interpolation). Levels: `error!` (unrecoverable), `warn!` (recovered), `info!` (lifecycle), `debug!` (frame-level), `trace!` (byte-level). Output to `logs/quell.log` and via `RUST_LOG` env var.
 
 ## Feature Flags
 
@@ -113,13 +84,22 @@ cargo clippy --lib --features recording  # With recording — no warnings
 ## Feature Workflow
 
 1. Create/update tasks for the feature
-2. Implement the feature with logging at all decision points
-3. Write unit tests covering happy path + edge cases
-4. Write integration tests if the feature touches I/O or ConPTY
-5. Run `cargo test` — all tests must pass
-6. Run `cargo clippy` — no warnings
-7. Live-prove against Claude Code — verify behavior under real streaming load
-8. Only then mark the feature as done
+2. Implement with tracing at decision points
+3. Write unit tests (happy path + edge cases) and integration tests if I/O-touching
+4. Commit — pre-commit hook enforces `cargo test` + `cargo clippy`
+5. Live-prove — hooks prompt for automated/automatable/manual categorization
+
+## Automated Hooks (`.claude/hooks/`)
+
+These fire automatically — no manual action needed:
+
+| Hook | Event | What It Does |
+|------|-------|-------------|
+| `planning_live_prove.py` | UserPromptSubmit | Injects live-proving checklist when planning features |
+| `live_proving_reminder.py` | TaskCompleted | Reminds to categorize live-proving as automated/automatable/manual |
+| `branch_phase_check.py` | PreToolUse (Edit/Write) | Warns if editing Phase 2 files on master or vice versa |
+| `pre_commit_gate.py` | PreToolUse (Bash) | Blocks `git commit` if cargo test or clippy fails |
+| `systematic_debugging.py` | Stop | Detects circular debugging (repeated corrections) and suggests structured approach |
 
 ## Key Dependencies
 

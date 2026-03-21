@@ -1,3 +1,4 @@
+#![allow(dead_code)] // Phase 2 extension point — diff rendering deferred to Tauri GUI
 use tracing::{debug, trace};
 
 /// Differential renderer using vt100 terminal emulator.
@@ -228,7 +229,7 @@ mod tests {
         assert_eq!(metrics.diff_renders, 1);
 
         // Diff should be smaller than full render
-        assert!(output.len() > 0);
+        assert!(!output.is_empty());
     }
 
     #[test]

@@ -57,6 +57,7 @@ pub enum ConPtyError {
     },
 
     #[error("child process exited with code {exit_code}")]
+    #[allow(dead_code)] // Phase 2 — used when proxy manages exit codes
     ChildExited { exit_code: u32 },
 
     #[error("failed to initialize process attribute list: {source}")]

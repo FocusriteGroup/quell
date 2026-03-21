@@ -14,6 +14,7 @@ pub mod session;
 mod sys;
 
 pub use console_mode::ConsoleMode;
+#[allow(unused_imports)] // Used by integration tests
 pub use error::ConPtyError;
 pub use pipes::OwnedHandle;
 pub use session::ConPtySession;

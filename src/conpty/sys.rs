@@ -319,10 +319,8 @@ mod tests {
         // This test may fail in CI where there's no real console
         let handle = get_std_handle(STD_OUTPUT_HANDLE);
         if let Ok(handle) = handle {
-            if let Ok(mode) = get_console_mode(handle) {
-                // Mode should be non-zero for a real console
-                assert!(mode.0 != 0 || true); // Just verify it doesn't crash
-            }
+            // Just verify get_console_mode doesn't crash
+            let _mode = get_console_mode(handle);
         }
     }
 }

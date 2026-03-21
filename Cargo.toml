@@ -1,6 +1,6 @@
 [package]
 name = "quell"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Windows-native terminal proxy for AI CLI tools — eliminates scroll-jumping and flicker"
 license = "MIT"

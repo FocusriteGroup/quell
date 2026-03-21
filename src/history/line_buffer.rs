@@ -15,6 +15,7 @@ pub enum HistoryEventType {
 
 /// A single history entry with metadata.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase 2 — fields used for structured output + replay
 pub struct HistoryEntry {
     pub line: Vec<u8>,
     pub timestamp: Instant,
@@ -98,6 +99,7 @@ impl LineBuffer {
     }
 
     /// Clear all stored history
+    #[allow(dead_code)] // Phase 2 — used for session management
     pub fn clear(&mut self) {
         debug!(
             lines_cleared = self.lines.len(),
@@ -108,32 +110,38 @@ impl LineBuffer {
     }
 
     /// Number of complete lines stored
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.lines.len()
     }
 
     /// Whether the buffer is empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
 
     /// Get all entries (for replay)
+    #[allow(dead_code)] // Phase 2 — used for structured output replay
     pub fn entries(&self) -> impl Iterator<Item = &HistoryEntry> {
         self.lines.iter()
     }
 
     /// Get all lines as byte slices (convenience for simple access)
+    #[allow(dead_code)]
     pub fn lines(&self) -> impl Iterator<Item = &[u8]> {
         self.lines.iter().map(|e| e.line.as_slice())
     }
 
     /// Get the last N entries
+    #[allow(dead_code)]
     pub fn tail(&self, n: usize) -> impl Iterator<Item = &HistoryEntry> {
         let skip = self.lines.len().saturating_sub(n);
         self.lines.iter().skip(skip)
     }
 
     /// Returns accumulated metrics
+    #[allow(dead_code)] // Phase 2 — used for status bar metrics
     pub fn metrics(&self) -> LineBufferMetrics {
         LineBufferMetrics {
             total_lines_added: self.total_lines_added,
@@ -146,6 +154,7 @@ impl LineBuffer {
 
 /// Metrics from the line buffer
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase 2
 pub struct LineBufferMetrics {
     pub total_lines_added: u64,
     pub total_lines_dropped: u64,

@@ -5,6 +5,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 /// In Phase 1, the receiver is immediately dropped — `try_send` silently
 /// fails with zero overhead. Phase 2 keeps the receiver alive for UI hooks.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Phase 2 — variants constructed in tests, used by Tauri GUI
 pub enum ProxyEvent {
     SyncBlockComplete {
         size_bytes: usize,

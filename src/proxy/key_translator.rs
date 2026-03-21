@@ -154,6 +154,7 @@ impl KeyTranslator {
         }
     }
 
+    #[allow(dead_code)] // Phase 2 — used for status bar metrics
     pub fn translations(&self) -> u64 {
         self.translations
     }
