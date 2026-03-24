@@ -303,11 +303,11 @@ mod proxy_pipeline_tests {
     #[test]
     fn test_proxy_echo_roundtrip() {
         use quell::config::AppConfig;
-        use quell::conpty::ConPtySession;
+        use quell::platform::{PlatformPtySession, PtySession};
         use quell::proxy::Proxy;
 
         let config = AppConfig::default();
-        let session = ConPtySession::spawn("cmd.exe /c echo proxy-test", 80, 25)
+        let session = PlatformPtySession::spawn("cmd.exe /c echo proxy-test", 80, 25)
             .expect("failed to spawn");
 
         let (proxy, _events) = Proxy::new(config, quell::config::ToolKind::Unknown, session);
@@ -326,11 +326,11 @@ mod proxy_pipeline_tests {
     #[test]
     fn test_proxy_captures_exit_code() {
         use quell::config::AppConfig;
-        use quell::conpty::ConPtySession;
+        use quell::platform::{PlatformPtySession, PtySession};
         use quell::proxy::Proxy;
 
         let config = AppConfig::default();
-        let session = ConPtySession::spawn("cmd.exe /c exit 42", 80, 25)
+        let session = PlatformPtySession::spawn("cmd.exe /c exit 42", 80, 25)
             .expect("failed to spawn");
 
         let (proxy, _events) = Proxy::new(config, quell::config::ToolKind::Unknown, session);
@@ -346,11 +346,11 @@ mod proxy_pipeline_tests {
     #[test]
     fn test_proxy_large_output() {
         use quell::config::AppConfig;
-        use quell::conpty::ConPtySession;
+        use quell::platform::{PlatformPtySession, PtySession};
         use quell::proxy::Proxy;
 
         let config = AppConfig::default();
-        let session = ConPtySession::spawn(
+        let session = PlatformPtySession::spawn(
             "cmd.exe /c \"for /L %i in (1,1,100) do @echo line%i\"",
             120,
             30,
