@@ -1,6 +1,10 @@
 mod config;
+#[cfg(target_os = "windows")]
 mod conpty;
 mod history;
+#[cfg(unix)]
+mod input;
+mod platform;
 mod proxy;
 mod vt;
 
@@ -9,7 +13,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 use config::AppConfig;
-use conpty::{ConsoleMode, ConPtySession};
+use platform::{PtySession, TerminalMode, PlatformPtySession, PlatformTerminalMode};
 use proxy::Proxy;
 
 fn main() -> Result<()> {
@@ -63,16 +67,17 @@ fn main() -> Result<()> {
 
     info!(exit_code, "quell shutting down");
 
-    // Force-exit the process. The input thread may still be blocked in
-    // ReadFile on the console handle (Windows doesn't support cancelling
-    // console reads reliably). Without this, the process hangs after
-    // main() returns because Rust's runtime waits for all threads.
+    // Force-exit the process. The input thread may still be blocked in a
+    // read (Windows console reads can't be cancelled reliably, and on Unix
+    // a blocking stdin read may not have been interrupted yet). Without
+    // this, the process hangs after main() returns because Rust's runtime
+    // waits for all threads.
     std::process::exit(exit_code as i32);
 }
 
 #[cfg(feature = "recording")]
 fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind, record_path: Option<&str>) -> Result<u32> {
-    let (cols, rows, console_mode, session) = setup_proxy(command_line)?;
+    let (cols, rows, terminal_mode, session) = setup_proxy(command_line)?;
 
     // Create and run the proxy
     let (proxy, _events) = Proxy::new(config, tool, session);
@@ -89,40 +94,40 @@ fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind, reco
     };
     let result = proxy.run();
 
-    teardown_proxy(console_mode);
+    teardown_proxy(terminal_mode);
     result
 }
 
 #[cfg(not(feature = "recording"))]
 fn run_proxy(command_line: &str, config: AppConfig, tool: config::ToolKind) -> Result<u32> {
-    let (_cols, _rows, console_mode, session) = setup_proxy(command_line)?;
+    let (_cols, _rows, terminal_mode, session) = setup_proxy(command_line)?;
 
     // Create and run the proxy
     let (proxy, _events) = Proxy::new(config, tool, session);
     let result = proxy.run();
 
-    teardown_proxy(console_mode);
+    teardown_proxy(terminal_mode);
     result
 }
 
-/// Common proxy setup: detect size, set console mode, spawn child.
-fn setup_proxy(command_line: &str) -> Result<(i16, i16, ConsoleMode, ConPtySession)> {
-    let (cols, rows) = conpty::get_terminal_size().unwrap_or((120, 30));
+/// Common proxy setup: detect size, set terminal mode, spawn child.
+fn setup_proxy(command_line: &str) -> Result<(i16, i16, PlatformTerminalMode, PlatformPtySession)> {
+    let (cols, rows) = platform::get_terminal_size().unwrap_or((120, 30));
     info!(cols, rows, "detected terminal size");
 
-    let console_mode = ConsoleMode::save_and_set_raw()
-        .context("failed to save/set console mode")?;
+    let terminal_mode = PlatformTerminalMode::save_and_set_raw()
+        .context("failed to save/set terminal mode")?;
 
     install_panic_hook();
 
-    let session = match ConPtySession::spawn(command_line, cols, rows) {
+    let session = match PlatformPtySession::spawn(command_line, cols, rows) {
         Ok(s) => s,
         Err(e) => {
-            let _ = console_mode.restore();
-            std::mem::forget(console_mode);
+            let _ = terminal_mode.restore();
+            terminal_mode.forget();
             // Extract the base command name for friendly messages
             let cmd_name = command_line.split_whitespace().next().unwrap_or(command_line);
-            let wrapped = anyhow::Error::from(e).context("failed to create ConPTY session");
+            let wrapped = e.context("failed to create PTY session");
             if print_friendly_spawn_error(cmd_name, &wrapped) {
                 // Friendly message already printed — log the full chain for --verbose
                 // and exit cleanly without dumping the anyhow chain to stderr.
@@ -133,15 +138,15 @@ fn setup_proxy(command_line: &str) -> Result<(i16, i16, ConsoleMode, ConPtySessi
         }
     };
 
-    Ok((cols, rows, console_mode, session))
+    Ok((cols, rows, terminal_mode, session))
 }
 
-/// Common proxy teardown: restore console mode.
-fn teardown_proxy(console_mode: ConsoleMode) {
-    if let Err(e) = console_mode.restore() {
-        warn!(error = %e, "failed to restore console mode");
+/// Common proxy teardown: restore terminal mode.
+fn teardown_proxy(terminal_mode: PlatformTerminalMode) {
+    if let Err(e) = terminal_mode.restore() {
+        warn!(error = %e, "failed to restore terminal mode");
     }
-    std::mem::forget(console_mode);
+    terminal_mode.forget();
 }
 
 /// Print a branded startup banner to stderr.
@@ -152,40 +157,18 @@ fn print_banner(command: &str) {
     eprintln!(" \u{2517}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{251b}");
 }
 
-/// Print a friendly error message for known Windows spawn failures.
+/// Print a friendly error message for known spawn failures.
 /// Returns true if a friendly message was printed.
 fn print_friendly_spawn_error(command: &str, error: &anyhow::Error) -> bool {
-    // Walk the error chain looking for a windows::core::Error
-    for cause in error.chain() {
-        if let Some(win_err) = cause.downcast_ref::<windows::core::Error>() {
-            let code = win_err.code().0 as u32;
-            match code {
-                // ERROR_FILE_NOT_FOUND
-                0x80070002 => {
-                    eprintln!("error: '{command}' not found.");
-                    eprintln!("  Make sure it's installed and on your PATH.");
-                    eprintln!("  Run 'where {command}' to check.");
-                    return true;
-                }
-                // ERROR_ACCESS_DENIED
-                0x80070005 => {
-                    eprintln!("error: Permission denied when launching '{command}'.");
-                    eprintln!("  Try running as administrator.");
-                    return true;
-                }
-                _ => {}
-            }
-        }
-    }
-    false
+    platform::print_friendly_spawn_error(command, error)
 }
 
-/// Install a panic hook that restores console mode before printing the panic.
+/// Install a panic hook that restores terminal mode before printing the panic.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // Restore console mode so the panic message is readable
-        ConsoleMode::emergency_restore();
+        // Restore terminal mode so the panic message is readable
+        PlatformTerminalMode::emergency_restore();
         default_hook(info);
     }));
 }

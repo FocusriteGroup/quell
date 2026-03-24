@@ -2,16 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
-    branches: [master]
+    branches: [master, main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build-and-test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +45,10 @@ jobs:
       - name: Run tests (recording feature)
         run: cargo test --features recording --verbose
 
+      - name: Run integration tests
+        run: cargo test --test integration --verbose
+        continue-on-error: true
+
       - name: Clippy (default features)
         run: cargo clippy -- -D warnings -A dead-code -A unused-imports
 
@@ -48,7 +56,7 @@ jobs:
         run: cargo clippy --features recording -- -D warnings -A dead-code -A unused-imports
 
   security:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 

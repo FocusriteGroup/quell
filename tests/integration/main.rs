@@ -1,6 +1,9 @@
-// Integration tests for ConPTY session management
+// Integration tests for PTY session management
 //
 // Run with: cargo test --test integration
+
+#[cfg(unix)]
+mod unix_proxy_tests;
 
 #[cfg(windows)]
 mod conpty_tests {

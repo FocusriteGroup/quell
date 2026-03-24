@@ -1,14 +1,14 @@
 // Proxy module — the main event loop
 //
 // Coordinates:
-// - ConPTY I/O threads (input + output)
+// - PTY I/O threads (input + output)
 // - Sync block detection
 // - History management
 //
 // Architecture:
-//   Input thread:  Real stdin → ConPTY input pipe (+ resize events → main thread)
-//   Output thread: ConPTY output pipe → channel → main thread
-//   Watcher thread: WaitForSingleObject on child process → shutdown signal
+//   Input thread:  Real stdin → PTY input (+ resize events → main thread)
+//   Output thread: PTY output → channel → main thread
+//   Watcher thread: wait for child process exit → shutdown signal
 //   Main thread:   Sync detector → stdout passthrough + history + metrics
 //
 // Phase 1 strategy: transparent passthrough with instrumentation.
@@ -17,14 +17,12 @@
 // rendering is deferred to Phase 2 (Tauri terminal) where we control
 // the display surface.
 //
-// Shutdown sequence (critical for ConPTY):
+// Shutdown sequence:
 //   1. Child process exits → watcher thread sends ChildExited signal
 //   2. Main loop breaks
-//   3. ClosePseudoConsole is called (via session Drop) — this closes the
-//      output pipe. MUST happen while the output thread is still reading
-//      (pipe read end open), otherwise ClosePseudoConsole deadlocks.
-//   4. Output thread gets pipe EOF and exits
-//   5. Input thread is signaled via shutdown event
+//   3. Session is dropped (closes PTY) — output pipe gets EOF
+//   4. Output thread exits
+//   5. Input thread is signaled via shutdown mechanism
 
 pub mod events;
 pub mod key_translator;
@@ -38,24 +36,24 @@ pub mod render_coalescer;
 pub use output_sink::OutputSink;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::{AppConfig, ToolKind};
-use crate::conpty::ConPtySession;
 use crate::history::{HistoryEventType, LineBuffer, OutputFilter};
+use crate::platform::{self, PtySession};
 use crate::vt::{SyncBlockDetector, SyncEvent};
 
 use events::{event_channel, ProxyEvent};
-use key_translator::{KeyTranslator, KITTY_DISABLE, KITTY_ENABLE};
+use key_translator::{KITTY_DISABLE, KITTY_ENABLE};
 
 /// Reason a thread is signaling shutdown
 #[derive(Debug, Clone)]
-enum ShutdownReason {
+pub(crate) enum ShutdownReason {
     InputEof,
     OutputEof,
     ChildExited,
@@ -66,7 +64,7 @@ enum ShutdownReason {
 pub struct Proxy {
     config: AppConfig,
     tool: ToolKind,
-    session: ConPtySession,
+    session: platform::PlatformPtySession,
     event_tx: Sender<ProxyEvent>,
     #[cfg(feature = "recording")]
     recorder: Option<recorder::VtcapRecorder>,
@@ -75,7 +73,7 @@ pub struct Proxy {
 impl Proxy {
     /// Create a new proxy. Returns (proxy, event_receiver).
     /// In Phase 1, the caller can drop the receiver immediately.
-    pub fn new(config: AppConfig, tool: ToolKind, session: ConPtySession) -> (Self, Receiver<ProxyEvent>) {
+    pub fn new(config: AppConfig, tool: ToolKind, session: platform::PlatformPtySession) -> (Self, Receiver<ProxyEvent>) {
         let (event_tx, event_rx) = event_channel();
         let (cols, rows) = session.size();
         info!(cols, rows, tool = %tool, "proxy created");
@@ -124,38 +122,34 @@ impl Proxy {
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-        // No Ctrl+C handler — with ENABLE_PROCESSED_INPUT disabled in console mode,
-        // Ctrl+C arrives as byte 0x03 via stdin, which our input thread writes to
-        // ConPTY's input pipe. ConPTY then generates CTRL_C_EVENT for the child.
-        // This gives natural Ctrl+C forwarding without interception.
+        // No Ctrl+C handler — in raw mode, Ctrl+C arrives as byte 0x03 via stdin,
+        // which our input thread writes to the PTY's input. The PTY then generates
+        // the appropriate signal for the child process.
+
+        // Shared exit status: the child-watcher thread stores the exit code here
+        // before signaling shutdown, avoiding a race where the main loop's waitpid
+        // gets ECHILD because the watcher already reaped the child.
+        let child_exit_status: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
 
         // Child exit watcher thread: detects when the child process exits.
-        // ConPTY does NOT close the output pipe when the child exits — you must
-        // call ClosePseudoConsole to break the pipe. This thread signals the main
-        // loop so we can initiate the correct shutdown sequence.
         let child_process_raw = self.session.process_handle_raw();
         let watcher_shutdown_tx = shutdown_tx.clone();
+        let watcher_exit_status = child_exit_status.clone();
         thread::Builder::new()
             .name("child-watcher".into())
             .spawn(move || {
-                use windows::Win32::Foundation::HANDLE;
-                use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
-
-                let handle = HANDLE(child_process_raw as *mut _);
-                unsafe {
-                    WaitForSingleObject(handle, INFINITE);
-                }
+                platform::wait_for_child_exit(child_process_raw, watcher_exit_status);
                 info!("child process exited (watcher)");
                 let _ = watcher_shutdown_tx.try_send(ShutdownReason::ChildExited);
             })
             .context("failed to spawn child watcher thread")?;
         info!("child watcher thread started");
 
-        // Output thread: reads from ConPTY output pipe, sends to main thread
+        // Output thread: reads from PTY output, sends to main thread
         let output_shutdown_tx = shutdown_tx.clone();
         let output_flag = shutdown_flag.clone();
         let output_thread = thread::Builder::new()
-            .name("conpty-output".into())
+            .name("pty-output".into())
             .spawn(move || {
                 let mut buf = vec![0u8; 8192];
                 loop {
@@ -170,7 +164,7 @@ impl Proxy {
                         }
                         Ok(n) => {
                             debug!(bytes = n, "output chunk received");
-                            if output_tx.send(buf[..n as usize].to_vec()).is_err() {
+                            if output_tx.send(buf[..n].to_vec()).is_err() {
                                 break;
                             }
                         }
@@ -188,52 +182,42 @@ impl Proxy {
             .context("failed to spawn output thread")?;
         info!("output thread started");
 
-        // Input thread: reads from real stdin, writes to ConPTY input pipe.
-        //
-        // When stdin is a real console, we use ReadConsoleInputW to get both
-        // keyboard events AND resize events (WINDOW_BUFFER_SIZE_EVENT). This
-        // gives instant resize response instead of the old 100ms polling.
-        // WaitForMultipleObjects provides clean shutdown via a shutdown event.
-        //
-        // When stdin is a pipe (e.g. in tests), we fall back to blocking read
-        // since the thread will unblock when the pipe closes.
+        // Input thread: reads from real stdin, writes to PTY input.
         let input_shutdown_tx = shutdown_tx.clone();
         let input_flag = shutdown_flag.clone();
 
-        // Create a manual-reset event to signal the input thread to shut down
-        let shutdown_event = create_shutdown_event()
-            .context("failed to create shutdown event")?;
-        let shutdown_event_handle = shutdown_event;
+        // Create a shutdown signaling mechanism for the input thread
+        let shutdown_signal = platform::create_shutdown_signal()
+            .context("failed to create shutdown signal")?;
 
-        let stdin_is_console = is_stdin_console();
-        debug!(stdin_is_console, "input thread mode selected");
+        let stdin_is_interactive = platform::is_stdin_interactive();
+        debug!(stdin_is_interactive, "input thread mode selected");
 
         let tool = self.tool;
         let input_thread = thread::Builder::new()
-            .name("conpty-input".into())
+            .name("pty-input".into())
             .spawn(move || {
-                if stdin_is_console {
-                    run_console_input_loop(
+                if stdin_is_interactive {
+                    platform::run_console_input_loop(
                         input_write,
                         input_flag,
                         input_shutdown_tx,
-                        shutdown_event_handle,
+                        shutdown_signal,
                         resize_tx,
                         tool,
                     );
                 } else {
-                    run_pipe_input_loop(input_write, input_flag, input_shutdown_tx);
+                    platform::run_pipe_input_loop(input_write, input_flag, input_shutdown_tx);
                 }
             })
             .context("failed to spawn input thread")?;
         info!("input thread started");
 
-        let stdout_handle = raw_stdout_handle();
         let mut last_size = (cols, rows);
 
         // Enable Kitty keyboard protocol on the outer terminal.
         // Terminals that don't support it will ignore the sequence.
-        if let Err(e) = raw_write_all(stdout_handle, KITTY_ENABLE) {
+        if let Err(e) = platform::raw_write_stdout(KITTY_ENABLE) {
             warn!(error = %e, "failed to send Kitty protocol enable");
         } else {
             info!("Kitty keyboard protocol enable sent");
@@ -257,19 +241,8 @@ impl Proxy {
                                 self.recorder = None;
                             }
 
-                            // Sync-aware filtering:
-                            // The output filter tracks BSU/ESU state and only
-                            // strips ESC[2J outside sync blocks. Inside sync
-                            // blocks, ESC[2J passes through — the terminal
-                            // renders BSU/ESU content atomically, so the clear
-                            // + redraw happens in one frame (no viewport jump).
-                            // ESC[3J (erase scrollback) is always stripped.
-                            //
-                            // This ensures the sync detector downstream sees
-                            // ESC[2J inside sync blocks, correctly identifying
-                            // full-redraw blocks for history management.
                             let filtered_owned = filtered.to_vec();
-                            if let Err(e) = raw_write_all(stdout_handle, &filtered_owned) {
+                            if let Err(e) = platform::raw_write_stdout(&filtered_owned) {
                                 error!(error = %e, "failed to write to stdout");
                                 break;
                             }
@@ -332,7 +305,7 @@ impl Proxy {
                             "terminal resize detected"
                         );
                         if let Err(e) = self.session.resize(new_cols, new_rows) {
-                            warn!(error = %e, "failed to resize ConPTY");
+                            warn!(error = %e, "failed to resize PTY");
                         }
                         last_size = (new_cols, new_rows);
 
@@ -346,7 +319,7 @@ impl Proxy {
         }
 
         // Disable Kitty keyboard protocol before restoring terminal state
-        if let Err(e) = raw_write_all(stdout_handle, KITTY_DISABLE) {
+        if let Err(e) = platform::raw_write_stdout(KITTY_DISABLE) {
             warn!(error = %e, "failed to send Kitty protocol disable");
         } else {
             info!("Kitty keyboard protocol disabled");
@@ -363,44 +336,51 @@ impl Proxy {
         info!("shutting down I/O threads");
         shutdown_flag.store(true, Ordering::Relaxed);
 
-        // Signal the input thread's shutdown event so it wakes up from WaitForMultipleObjects
-        signal_shutdown_event(shutdown_event_handle);
+        // Signal the input thread to wake up
+        platform::signal_shutdown(shutdown_signal);
 
-        // Get exit code before closing ConPTY.
-        // The child may have already exited (ChildExited signal) or the output pipe
-        // may have closed first (for short-lived commands). Either way, try to get
-        // the exit code with a short timeout.
-        let exit_code = match self.session.try_wait_for_child(2000) {
-            Ok(Some(code)) => {
-                info!(exit_code = code, "child exited");
+        // Get exit code: prefer the status stored by the child-watcher thread
+        // (which already reaped the child via blocking waitpid). Fall back to
+        // try_wait_for_child only if the watcher hasn't stored a status yet
+        // (e.g., shutdown was triggered by something other than child exit).
+        let exit_code = {
+            let stored = child_exit_status.lock().unwrap().take();
+            if let Some(code) = stored {
+                info!(exit_code = code, "child exited (from watcher)");
                 let _ = self.event_tx.try_send(ProxyEvent::ChildExited {
                     exit_code: code,
                 });
                 code
-            }
-            Ok(None) => {
-                warn!("child did not exit within timeout");
-                0
-            }
-            Err(e) => {
-                warn!(error = %e, "failed to get child exit code");
-                0
+            } else {
+                match self.session.try_wait_for_child(2000) {
+                    Ok(Some(code)) => {
+                        info!(exit_code = code, "child exited (from try_wait)");
+                        let _ = self.event_tx.try_send(ProxyEvent::ChildExited {
+                            exit_code: code,
+                        });
+                        code
+                    }
+                    Ok(None) => {
+                        warn!("child did not exit within timeout");
+                        0
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to get child exit code");
+                        0
+                    }
+                }
             }
         };
 
-        // Drop session — this calls ClosePseudoConsole, which closes the ConPTY
-        // output pipe. The output thread is still reading from the pipe (its read
-        // end is open), so ClosePseudoConsole can flush without deadlocking.
-        // After this, the output thread will get pipe EOF and exit.
-        info!("closing ConPTY session");
+        // Drop session — this closes the PTY, causing the output thread to get EOF
+        info!("closing PTY session");
         drop(self.session);
 
         // Wait for the output thread — it should exit quickly after pipe EOF
         info!("waiting for output thread");
         let _ = output_thread.join();
 
-        // The input thread is NOT joined — on Windows, ReadConsoleInputW on a
-        // console handle can block even after WaitForMultipleObjects signals.
+        // The input thread is NOT joined — it may be blocked in a read.
         // The thread will be killed when the process exits.
         drop(input_thread);
 
@@ -411,203 +391,6 @@ impl Proxy {
         );
 
         Ok(exit_code)
-    }
-}
-
-/// Check if stdin is a real console (vs a pipe in test environments).
-fn is_stdin_console() -> bool {
-    use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
-
-    unsafe {
-        if let Ok(handle) = GetStdHandle(STD_INPUT_HANDLE) {
-            let mut mode = windows::Win32::System::Console::CONSOLE_MODE(0);
-            GetConsoleMode(handle, &mut mode).is_ok()
-        } else {
-            false
-        }
-    }
-}
-
-/// Create a manual-reset Windows Event for signaling shutdown to the input thread.
-/// Returns the raw handle value as usize (safe to send across threads).
-fn create_shutdown_event() -> Result<usize> {
-    use windows::Win32::System::Threading::CreateEventW;
-
-    let handle = unsafe {
-        CreateEventW(
-            None,  // default security
-            true,  // manual reset
-            false, // initially non-signaled
-            None,  // unnamed
-        )
-        .context("CreateEventW failed")?
-    };
-    Ok(handle.0 as usize)
-}
-
-/// Signal the shutdown event to wake up the input thread.
-fn signal_shutdown_event(event_handle: usize) {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Threading::SetEvent;
-
-    let handle = HANDLE(event_handle as *mut _);
-    unsafe {
-        let _ = SetEvent(handle);
-    }
-}
-
-/// Console input loop: uses ReadConsoleInputW to handle both keyboard input
-/// and WINDOW_BUFFER_SIZE_EVENT for instant resize detection.
-///
-/// WaitForMultipleObjects on stdin + shutdown event provides clean cancellation.
-/// With ENABLE_VIRTUAL_TERMINAL_INPUT active, the console converts arrow keys,
-/// function keys, etc. into VT escape sequences delivered as KEY_EVENT records
-/// with valid UnicodeChar values — no manual VT sequence generation needed.
-fn run_console_input_loop(
-    input_write: crate::conpty::OwnedHandle,
-    flag: Arc<AtomicBool>,
-    shutdown_tx: Sender<ShutdownReason>,
-    shutdown_event_handle: usize,
-    resize_tx: Sender<(i16, i16)>,
-    tool: ToolKind,
-) {
-    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
-    use windows::Win32::System::Console::{
-        GetStdHandle, ReadConsoleInputW, INPUT_RECORD, KEY_EVENT, STD_INPUT_HANDLE,
-        WINDOW_BUFFER_SIZE_EVENT,
-    };
-    use windows::Win32::System::Threading::WaitForMultipleObjects;
-
-    let stdin_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE).unwrap_or_default() };
-    let event_handle = HANDLE(shutdown_event_handle as *mut _);
-    let handles = [stdin_handle, event_handle];
-    let mut records = vec![INPUT_RECORD::default(); 128];
-    let mut translator = KeyTranslator::new(tool);
-
-    loop {
-        if flag.load(Ordering::Relaxed) {
-            break;
-        }
-
-        // Wait for either stdin events or shutdown event (100ms timeout for flag checks)
-        let wait_result = unsafe { WaitForMultipleObjects(&handles, false, 100) };
-
-        if wait_result == WAIT_OBJECT_0 {
-            // stdin signaled — read console input records
-            let mut num_read = 0u32;
-            let read_ok = unsafe {
-                ReadConsoleInputW(stdin_handle, &mut records, &mut num_read).is_ok()
-            };
-
-            if !read_ok || num_read == 0 {
-                info!("stdin EOF");
-                let _ = shutdown_tx.try_send(ShutdownReason::InputEof);
-                break;
-            }
-
-            // Process each input record
-            let mut input_bytes = Vec::new();
-            for record in &records[..num_read as usize] {
-                match record.EventType as u32 {
-                    KEY_EVENT => {
-                        let key = unsafe { record.Event.KeyEvent };
-                        // Only process key-down events
-                        if key.bKeyDown.as_bool() {
-                            let uc = unsafe { key.uChar.UnicodeChar };
-                            if uc != 0 {
-                                // Encode UTF-16 code unit to UTF-8
-                                if let Some(ch) = char::from_u32(uc as u32) {
-                                    let mut buf = [0u8; 4];
-                                    let encoded = ch.encode_utf8(&mut buf);
-                                    // Handle repeat count
-                                    for _ in 0..key.wRepeatCount.max(1) {
-                                        input_bytes.extend_from_slice(encoded.as_bytes());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    WINDOW_BUFFER_SIZE_EVENT => {
-                        let size = unsafe { record.Event.WindowBufferSizeEvent };
-                        let new_cols = size.dwSize.X;
-                        let new_rows = size.dwSize.Y;
-                        debug!(cols = new_cols, rows = new_rows, "resize event received");
-                        // Use try_send to naturally coalesce rapid resize events
-                        let _ = resize_tx.try_send((new_cols, new_rows));
-                    }
-                    _ => {
-                        trace!(event_type = record.EventType, "skipping non-keyboard input event");
-                    }
-                }
-            }
-
-            // Translate Kitty sequences and write to ConPTY
-            if !input_bytes.is_empty() {
-                let translated = translator.translate(&input_bytes);
-                debug!(raw_bytes = input_bytes.len(), translated_bytes = translated.len(), "stdin read");
-                if let Err(e) = input_write.write_all(&translated) {
-                    if !flag.load(Ordering::Relaxed) {
-                        warn!(error = %e, "input pipe write error");
-                        let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
-                    }
-                    break;
-                }
-            }
-        } else if wait_result.0 == WAIT_OBJECT_0.0 + 1 {
-            // Shutdown event signaled
-            info!("input thread: shutdown event received");
-            break;
-        }
-        // Timeout or error — loop back and check flag
-    }
-
-    // Clean up the event handle
-    unsafe {
-        let _ = windows::Win32::Foundation::CloseHandle(event_handle);
-    }
-}
-
-/// Pipe input loop: simple blocking read, used when stdin is a pipe (e.g. in tests).
-/// The thread will unblock when the pipe is closed or the process exits.
-fn run_pipe_input_loop(
-    input_write: crate::conpty::OwnedHandle,
-    flag: Arc<AtomicBool>,
-    shutdown_tx: Sender<ShutdownReason>,
-) {
-    use std::io::Read;
-
-    let stdin = std::io::stdin();
-    let mut stdin = stdin.lock();
-    let mut buf = vec![0u8; 1024];
-
-    loop {
-        if flag.load(Ordering::Relaxed) {
-            break;
-        }
-        match stdin.read(&mut buf) {
-            Ok(0) => {
-                info!("stdin EOF");
-                let _ = shutdown_tx.try_send(ShutdownReason::InputEof);
-                break;
-            }
-            Ok(n) => {
-                debug!(bytes = n, "stdin read");
-                if let Err(e) = input_write.write_all(&buf[..n]) {
-                    if !flag.load(Ordering::Relaxed) {
-                        warn!(error = %e, "input pipe write error");
-                        let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
-                    }
-                    break;
-                }
-            }
-            Err(e) => {
-                if !flag.load(Ordering::Relaxed) {
-                    warn!(error = %e, "stdin read error");
-                    let _ = shutdown_tx.try_send(ShutdownReason::IoError(e.to_string()));
-                }
-                break;
-            }
-        }
     }
 }
 
@@ -645,28 +428,6 @@ pub fn strip_clear_screen(data: &[u8]) -> Vec<u8> {
     }
 
     result
-}
-
-/// Get the raw stdout handle for direct WriteFile access.
-/// We bypass Rust's `std::io::stdout()` because it uses `WriteConsoleW` in console mode,
-/// which rejects non-UTF-8 byte sequences (e.g., emoji split across ConPTY chunks).
-fn raw_stdout_handle() -> windows::Win32::Foundation::HANDLE {
-    use windows::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
-    unsafe { GetStdHandle(STD_OUTPUT_HANDLE).expect("failed to get stdout handle") }
-}
-
-/// Write all bytes to a raw handle using WriteFile.
-fn raw_write_all(handle: windows::Win32::Foundation::HANDLE, mut data: &[u8]) -> anyhow::Result<()> {
-    use windows::Win32::Storage::FileSystem::WriteFile;
-    while !data.is_empty() {
-        let mut written = 0u32;
-        unsafe {
-            WriteFile(handle, Some(data), Some(&mut written), None)
-                .map_err(|e| anyhow::anyhow!("WriteFile failed: {e}"))?;
-        }
-        data = &data[written as usize..];
-    }
-    Ok(())
 }
 
 #[cfg(test)]
