@@ -241,13 +241,13 @@ pub fn run_console_input_loop(
                         let key = unsafe { record.Event.KeyEvent };
                         if key.bKeyDown.as_bool() {
                             let uc = unsafe { key.uChar.UnicodeChar };
-                            if uc != 0 {
-                                if let Some(ch) = char::from_u32(uc as u32) {
-                                    let mut buf = [0u8; 4];
-                                    let encoded = ch.encode_utf8(&mut buf);
-                                    for _ in 0..key.wRepeatCount.max(1) {
-                                        input_bytes.extend_from_slice(encoded.as_bytes());
-                                    }
+                            if uc != 0
+                                && let Some(ch) = char::from_u32(uc as u32)
+                            {
+                                let mut buf = [0u8; 4];
+                                let encoded = ch.encode_utf8(&mut buf);
+                                for _ in 0..key.wRepeatCount.max(1) {
+                                    input_bytes.extend_from_slice(encoded.as_bytes());
                                 }
                             }
                         }
