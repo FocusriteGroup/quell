@@ -20,19 +20,12 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: quell.exe
             artifact: quell-windows-x86_64.exe
-            checksum_artifact: quell-windows-x86_64.exe.sha256
             shell: pwsh
-            checksum_cmd: |
-              $hash = (Get-FileHash target/release/quell.exe -Algorithm SHA256).Hash
-              "$hash  quell-windows-x86_64.exe" | Out-File -Encoding ascii -FilePath quell-windows-x86_64.exe.sha256
           - os: macos-latest
             target: aarch64-apple-darwin
             binary: quell
             artifact: quell-macos-aarch64
-            checksum_artifact: quell-macos-aarch64.sha256
             shell: bash
-            checksum_cmd: |
-              shasum -a 256 quell-macos-aarch64 > quell-macos-aarch64.sha256
 
     runs-on: ${{ matrix.os }}
 
@@ -54,17 +47,27 @@ jobs:
         shell: bash
         run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
 
-      - name: Generate SHA256 checksum
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.checksum_cmd }}
+      - name: Generate checksums (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash quell-windows-x86_64.exe -Algorithm SHA256).Hash
+          "$hash  quell-windows-x86_64.exe" | Out-File -Encoding ascii -FilePath quell-windows-x86_64.exe.sha256
+
+      - name: Generate checksums and tarball (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          shasum -a 256 quell-macos-aarch64 > quell-macos-aarch64.sha256
+          tar czf quell-macos-aarch64.tar.gz quell-macos-aarch64
+          shasum -a 256 quell-macos-aarch64.tar.gz > quell-macos-aarch64.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.os }}
           path: |
-            ${{ matrix.artifact }}
-            ${{ matrix.checksum_artifact }}
+            quell-*
 
   release:
     needs: build
@@ -83,4 +86,6 @@ jobs:
             quell-windows-x86_64.exe.sha256
             quell-macos-aarch64
             quell-macos-aarch64.sha256
+            quell-macos-aarch64.tar.gz
+            quell-macos-aarch64.tar.gz.sha256
           generate_release_notes: true

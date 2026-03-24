@@ -1,9 +1,9 @@
 #!/bin/sh
 # install.sh - Install quell from GitHub Releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/FurbySoup/quell/main/scripts/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/FocusriteGroup/quell/main/scripts/install.sh | sh
 set -eu
 
-REPO="FurbySoup/quell"
+REPO="FocusriteGroup/quell"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="quell"
 
