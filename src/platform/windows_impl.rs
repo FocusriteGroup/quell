@@ -107,14 +107,14 @@ impl PlatformTerminalMode {
     /// Consume self without running Drop on the inner ConsoleMode.
     /// Used after explicit restore() to prevent double-restore.
     pub fn forget(self) {
-        std::mem::forget(self.inner);
+        // Forgetting self also prevents inner's Drop from running
         std::mem::forget(self);
     }
 
     /// Access the inner ConsoleMode for error recovery (e.g. restore before re-throwing).
     pub fn restore_and_forget(self) -> Result<()> {
         let result = self.inner.restore().map_err(|e| anyhow::anyhow!("{e}"));
-        std::mem::forget(self.inner);
+        // Forgetting self prevents inner's Drop (double-restore)
         std::mem::forget(self);
         result
     }

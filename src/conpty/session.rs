@@ -126,6 +126,11 @@ impl ConPtySession {
     }
 }
 
+// SAFETY: ConPtySession contains HANDLE and HPCON fields which are `*mut c_void`
+// (not Send in windows 0.59+). Win32 handles are process-wide integer indices into
+// the kernel object table and are safe to use from any thread.
+unsafe impl Send for ConPtySession {}
+
 impl Drop for ConPtySession {
     fn drop(&mut self) {
         // Drop pipe handles first (close our side)

@@ -148,6 +148,11 @@ impl ConsoleMode {
     }
 }
 
+// SAFETY: ConsoleMode contains HANDLE fields which are `*mut c_void`
+// (not Send in windows 0.59+). Win32 handles are process-wide integer indices
+// into the kernel object table and are safe to use from any thread.
+unsafe impl Send for ConsoleMode {}
+
 impl Drop for ConsoleMode {
     fn drop(&mut self) {
         if let Err(e) = self.restore() {
