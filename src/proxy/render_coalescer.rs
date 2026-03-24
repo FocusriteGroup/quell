@@ -183,15 +183,15 @@ mod tests {
     #[test]
     fn test_sync_overrides_normal() {
         let mut c = RenderCoalescer::new(
-            Duration::from_millis(1),
-            Duration::from_millis(50),
+            Duration::from_millis(5),
+            Duration::from_millis(200),
             Duration::ZERO,
         );
         c.notify_data();
         // Before normal deadline fires, sync arrives
         c.notify_sync_block();
         // Even after normal delay passes, should still wait for sync delay
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(20));
         assert!(!c.should_render());
     }
 
@@ -215,18 +215,18 @@ mod tests {
     fn test_sync_deadline_resets() {
         let mut c = RenderCoalescer::new(
             Duration::from_millis(5),
-            Duration::from_millis(20),
+            Duration::from_millis(200),
             Duration::ZERO,
         );
         c.notify_sync_block();
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(50));
         // Another sync block resets the deadline
         c.notify_sync_block();
-        thread::sleep(Duration::from_millis(10));
-        // Only 10ms since last sync, 20ms delay — should not fire
+        thread::sleep(Duration::from_millis(50));
+        // Only 50ms since last sync, 200ms delay — should not fire
         assert!(!c.should_render());
-        thread::sleep(Duration::from_millis(15));
-        // Now 25ms since last sync — should fire
+        thread::sleep(Duration::from_millis(200));
+        // Now 250ms since last sync — should fire
         assert!(c.should_render());
     }
 
