@@ -2,7 +2,7 @@
 
 ## What It Does
 
-quell is a terminal proxy that fixes the scroll-jumping problem in AI CLI tools like Claude Code, Copilot CLI, and Gemini CLI. When these tools stream long responses, your terminal's scroll position jumps around on every update, making output unreadable while it's still arriving. quell sits between your terminal and the AI tool and keeps your scroll position exactly where you left it.
+quell is a terminal proxy that fixes the scroll-jumping problem in Claude Code. When Claude streams long responses, your terminal's scroll position jumps around on every update, making output unreadable while it's still arriving. quell sits between your terminal and Claude Code, keeping your scroll position exactly where you left it.
 
 ## macOS Installation
 
@@ -11,7 +11,7 @@ quell is a terminal proxy that fixes the scroll-jumping problem in AI CLI tools 
 Run this in your terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FurbySoup/quell/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/FocusriteGroup/quell/main/scripts/install.sh | sh
 ```
 
 This downloads the latest release binary and puts it in `~/.local/bin`.
@@ -19,14 +19,7 @@ This downloads the latest release binary and puts it in `~/.local/bin`.
 ### Homebrew
 
 ```bash
-brew install --formula scripts/homebrew/quell.rb
-```
-
-Or, if a tap is available:
-
-```bash
-brew tap FurbySoup/quell
-brew install quell
+brew install FocusriteGroup/tap/quell
 ```
 
 ### Build from source
@@ -34,7 +27,7 @@ brew install quell
 Requires [Rust](https://rustup.rs/) (stable toolchain).
 
 ```bash
-git clone https://github.com/FurbySoup/quell.git
+git clone https://github.com/FocusriteGroup/quell.git
 cd quell
 cargo build --release
 cp target/release/quell /usr/local/bin/
@@ -44,7 +37,7 @@ cp target/release/quell /usr/local/bin/
 
 ### Download a release binary
 
-1. Go to [GitHub Releases](https://github.com/FurbySoup/quell/releases).
+1. Go to [GitHub Releases](https://github.com/FocusriteGroup/quell/releases).
 2. Download `quell-windows-x86_64.exe`.
 3. Rename it to `quell.exe` and place it in a directory on your PATH (e.g. `C:\Users\YOU\.local\bin`).
 4. Open a new terminal to pick up the change.
@@ -54,7 +47,7 @@ cp target/release/quell /usr/local/bin/
 Requires [Rust](https://rustup.rs/) (stable toolchain).
 
 ```bash
-git clone https://github.com/FurbySoup/quell.git
+git clone https://github.com/FocusriteGroup/quell.git
 cd quell
 cargo build --release
 ```
@@ -160,7 +153,7 @@ Replace the script paths with your own. The key idea is that quell wraps the who
 quell is not on your PATH. Check where you placed the binary and make sure that directory is in your PATH. On Windows, PATH entries must be directories, not files. Open a new terminal after changing PATH.
 
 **Scroll still jumps**
-Make sure you are on the latest version. Run `quell --verbose -- claude` and check the output for clues. If the issue persists, [open an issue](https://github.com/FurbySoup/quell/issues) with the verbose log.
+Make sure you are on the latest version. Run `quell --verbose -- claude` and check the output for clues. If the issue persists, [open an issue](https://github.com/FocusriteGroup/quell/issues) with the verbose log.
 
 **How do I update?**
 Re-run the install script, re-download the release binary, or rebuild from source. The install script always fetches the latest release.

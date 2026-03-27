@@ -78,7 +78,7 @@ The proxy saves and restores terminal mode on exit, including on panic. A crash 
 
 ## Vulnerability Reporting
 
-If you discover a security vulnerability, please report it through [GitHub's Private Vulnerability Reporting](https://github.com/FurbySoup/quell/security/advisories/new) rather than opening a public issue. We will acknowledge receipt within 48 hours and aim to release a fix within 7 days for critical issues.
+If you discover a security vulnerability, please report it through [GitHub's Private Vulnerability Reporting](https://github.com/FocusriteGroup/quell/security/advisories/new) rather than opening a public issue. We will acknowledge receipt within 48 hours and aim to release a fix within 7 days for critical issues.
 
 ## Verification
 

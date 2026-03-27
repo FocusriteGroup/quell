@@ -1,25 +1,26 @@
 # quell
 
-[![CI](https://github.com/FurbySoup/quell/actions/workflows/ci.yml/badge.svg)](https://github.com/FurbySoup/quell/actions/workflows/ci.yml)
+[![CI](https://github.com/FocusriteGroup/quell/actions/workflows/ci.yml/badge.svg)](https://github.com/FocusriteGroup/quell/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/FurbySoup/quell/releases)
+[![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple)](https://github.com/FocusriteGroup/quell/releases)
+[![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](https://github.com/FocusriteGroup/quell/releases)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust)](https://www.rust-lang.org/)
 
-**Windows-native terminal proxy that eliminates scroll-jumping for AI CLI tools.**
+**Terminal proxy that eliminates scroll-jumping for AI CLI tools. macOS and Windows.**
 
-When Claude Code, Copilot CLI, or Gemini CLI stream long responses, your terminal's scroll position jumps to the top of the visible output on every update — making it impossible to read anything while new content arrives. quell sits between your terminal and the AI tool, keeping your scroll position stable.
+When Claude Code streams long responses, your terminal's scroll position jumps to the top of the visible output on every update — making it impossible to read anything while new content arrives. quell sits between your terminal and Claude Code, keeping your scroll position stable.
 
 ## The Problem
 
-Every AI CLI tool streams output through VT escape sequences. Terminals reset the scroll position to the top of the output on each update, causing constant scroll-jumping during long responses. This is the [#1 complaint](https://github.com/anthropics/claude-code/issues/1208) across AI CLI tools, with hundreds of upvotes across multiple issue trackers.
+Claude Code streams output through VT escape sequences. On every full redraw, it emits clear-screen + cursor-home inside synchronized update blocks, and the terminal resets the scroll position to the top. This is [the #1 complaint](https://github.com/anthropics/claude-code/issues/1208) — hundreds of upvotes, hundreds of comments.
 
 ## How It Works
 
 ```
-Your Terminal  <-->  quell (proxy)  <-->  ConPTY  <-->  AI CLI tool
+Your Terminal  <-->  quell (proxy)  <-->  PTY  <-->  AI CLI tool
 ```
 
-quell intercepts the child process output via Windows ConPTY, processes VT escape sequences, filters dangerous sequences, and forwards clean output to your terminal. Your scroll position stays exactly where you left it.
+quell intercepts the child process output via a pseudo-terminal (ConPTY on Windows, `forkpty` on macOS/Linux), processes VT escape sequences, filters dangerous sequences, and forwards clean output to your terminal. Your scroll position stays exactly where you left it.
 
 ## Features
 
@@ -27,66 +28,49 @@ quell intercepts the child process output via Windows ConPTY, processes VT escap
 - **Shift+Enter support** — inserts newline in Claude Code via [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (Windows Terminal 1.25+)
 - **Security filtering** — blocks clipboard access (OSC 52), dangerous URL schemes (ssh://, javascript://), terminal query attacks, and C1 control characters
 - **Full Unicode** — emoji, CJK, box-drawing, mathematical symbols all render correctly
-- **Tool-agnostic** — works with Claude Code, Copilot CLI, Gemini CLI, or any terminal program
+- **Tool-agnostic** — built for Claude Code, works with any terminal program
 - **Zero config** — just prefix your command with `quell`
 - **No network, no telemetry** — the binary makes zero network connections
 
 ## Quick Start
 
-### Install
-
-1. Download `quell.exe` from [Releases](https://github.com/FurbySoup/quell/releases)
-2. Place it in a folder on your PATH (e.g. `C:\Users\YOU\.local\bin`)
-3. Open a new terminal and run:
+### macOS
 
 ```bash
-quell claude
+brew install FocusriteGroup/tap/quell
+quell -- claude
 ```
 
-That's it. quell shows a banner when it starts, launches Claude Code behind it, and keeps your scroll position stable.
+### Windows
+
+Download `quell.exe` from [Releases](https://github.com/FocusriteGroup/quell/releases), place it on your PATH, and run:
+
+```bash
+quell -- claude
+```
+
+See [INSTALL.md](INSTALL.md) for full installation options (curl script, build from source, aliases, configuration).
 
 ### Usage
 
 ```bash
 # Run Claude Code through quell
-quell claude -- --dangerously-skip-permissions
+quell -- claude
 
-# Run any AI CLI tool
-quell gemini
-quell copilot
-
-# Explicit tool override (affects Shift+Enter behavior)
-quell --tool claude my-custom-claude-wrapper
+# Pass flags to Claude Code
+quell -- claude --dangerously-skip-permissions
 
 # Verbose output for troubleshooting
-quell --verbose claude
-```
-
-### Build from Source
-
-Requires [Rust](https://rustup.rs/) (stable toolchain).
-
-```bash
-git clone https://github.com/FurbySoup/quell.git
-cd quell
-cargo build --release
-# Binary at target/release/quell.exe
+quell --verbose -- claude
 ```
 
 ### Troubleshooting
 
-**`quell claude` does nothing / not recognized**
-Your PATH points to the exe file itself instead of the folder containing it. `PATH` entries must be directories, not files. Move `quell.exe` into a directory that's already on your PATH, or add the directory (not the file) to PATH.
-
-**`failed to spawn process (0x80070002)`**
-The child command (`claude`, `gemini`, etc.) isn't on your PATH. Run `where claude` to check. If nothing is found, install the tool first.
-
-**Scroll still jumps**
-Make sure you're on the latest release. Run `quell --verbose claude` and check the debug output for clues. If the issue persists, [open an issue](https://github.com/FurbySoup/quell/issues) with the verbose log.
+See [INSTALL.md](INSTALL.md) for troubleshooting steps. If the issue persists, [open an issue](https://github.com/FocusriteGroup/quell/issues).
 
 ## Configuration
 
-quell works out of the box with no configuration. Optional settings can be placed in `%APPDATA%\quell\config.toml`:
+quell works out of the box with no configuration. Optional settings can be placed in `~/.config/quell/config.toml` (macOS/Linux) or `%APPDATA%\quell\config.toml` (Windows):
 
 ```toml
 render_delay_ms = 5        # Normal output coalescing (ms)
@@ -114,6 +98,7 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Requirements
 
+- **macOS** — Apple Silicon (aarch64). Intel Macs can build from source.
 - **Windows 10 1809+** (ConPTY support required)
 - **Windows Terminal 1.25+** for Shift+Enter support (older terminals still work, Alt+Enter remains available)
 
